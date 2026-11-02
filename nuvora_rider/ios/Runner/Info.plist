@@ -4,6 +4,15 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Nuvora Rider uses the camera to scan parcel QR codes and to take proof-of-delivery photos.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Nuvora Rider uses your photos so you can attach a proof-of-delivery picture.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>CFBundleDisplayName</key>
 	<string>Nuvora App</string>
 	<key>CFBundleExecutable</key>

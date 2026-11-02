@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import 'features/auth/login_screen.dart';
+import 'features/splash/splash_screen.dart';
 import 'theme/app_colors.dart';
 
 void main() {
@@ -12,11 +12,11 @@ void main() {
       statusBarIconBrightness: Brightness.light,
     ),
   );
-  runApp(const MyApp());
+  runApp(const NuvoraRiderApp());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class NuvoraRiderApp extends StatelessWidget {
+  const NuvoraRiderApp({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -32,19 +32,22 @@ class MyApp extends StatelessWidget {
           primary: AppColors.primary,
           secondary: AppColors.primaryLight,
         ),
-        appBarTheme: AppBarTheme(
+        appBarTheme: const AppBarTheme(
           backgroundColor: AppColors.background,
           foregroundColor: AppColors.ink,
           elevation: 0,
           scrolledUnderElevation: 0,
           centerTitle: false,
-          titleTextStyle: const TextStyle(
+          titleTextStyle: TextStyle(
             color: AppColors.ink,
             fontSize: 18,
             fontWeight: FontWeight.w800,
           ),
         ),
         dividerTheme: const DividerThemeData(color: AppColors.border, space: 1),
+        progressIndicatorTheme: const ProgressIndicatorThemeData(
+          color: AppColors.primary,
+        ),
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
           fillColor: AppColors.card,
@@ -80,8 +83,19 @@ class MyApp extends StatelessWidget {
           backgroundColor: AppColors.primaryDeep,
           contentTextStyle: TextStyle(color: Colors.white),
         ),
+        filledButtonTheme: FilledButtonThemeData(
+          style: FilledButton.styleFrom(
+            backgroundColor: AppColors.primary,
+            foregroundColor: Colors.white,
+            minimumSize: const Size(0, 48),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
+            textStyle: const TextStyle(fontWeight: FontWeight.w800),
+          ),
+        ),
       ),
-      home: const LoginScreen(),
+      home: const SplashScreen(),
     );
   }
 }

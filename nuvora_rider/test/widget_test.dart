@@ -97,7 +97,11 @@ void main() {
   testWidgets('Login screen renders and opens registration', (
     WidgetTester tester,
   ) async {
-    await tester.pumpWidget(const MyApp());
+    await tester.pumpWidget(const NuvoraRiderApp());
+
+    // The splash screen hands over to the login form after a short delay.
+    await tester.pump(const Duration(seconds: 2));
+    await tester.pumpAndSettle();
 
     // The login page scrolls, so bring the register link on screen first.
     await tester.scrollUntilVisible(

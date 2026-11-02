@@ -1,6 +1,12 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../../core/api/rider_api.dart';
+import '../../core/data/ph_address.dart';
+import '../../core/ocr/document_reader.dart';
 import '../../theme/app_colors.dart';
 import 'login_screen.dart';
 import 'rider_email_otp_sheet.dart';
@@ -25,8 +31,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
   // ── Field state ──────────────────────────────────────────────────────────
   final Map<String, TextEditingController> _fields = {};
   final Map<String, GlobalKey> _keys = {};
-  final Map<String, String> _files = {};
+  final Map<String, XFile> _docs = {};
   final Set<String> _flagged = {};
+  bool _scanning = false;
 
   String? _sex;
   String? _vehicleType;
@@ -34,6 +41,17 @@ class _RegisterScreenState extends State<RegisterScreen> {
   String? _province;
   String? _city;
   String? _barangay;
+  PhPlace? _provincePlace;
+  PhPlace? _cityPlace;
+  List<PhPlace> _provinces = const [];
+  List<PhPlace> _cities = const [];
+  List<PhPlace> _barangays = const [];
+  bool _loadingProvinces = true;
+  bool _loadingCities = false;
+  bool _loadingBarangays = false;
+  String? _provinceError;
+  String? _cityError;
+  String? _barangayError;
   bool _agreed = false;
   bool _submitting = false;
   bool _emailVerified = false;
@@ -47,32 +65,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     'L300',
     'Truck',
   ];
-  final List<String> _licenseCodes = const [
-    'A — Motorcycle',
-    'A1 — Tricycle',
-    'B — Up to 4,500 KGS GVW / 8 seats',
-  ];
-
-  // Small offline sample of the address cascade.
-  final Map<String, Map<String, List<String>>> _locations = const {
-    'Metro Manila': {
-      'Quezon City': [
-        'Barangay Socorro',
-        'Barangay Holy Spirit',
-        'Barangay Bagong Silangan',
-      ],
-      'Manila': ['Barangay Malate', 'Barangay Tondo', 'Barangay Ermita'],
-      'Makati': ['Barangay Poblacion', 'Barangay Bel-Air'],
-    },
-    'Cavite': {
-      'Bacoor': ['Barangay Molino III', 'Barangay Zapote'],
-      'Dasmariñas': ['Barangay Paliparan III', 'Barangay Emilio Aguinaldo'],
-    },
-    'Laguna': {
-      'Calamba': ['Barangay Poblacion', 'Barangay Bucal'],
-      'Santa Rosa': ['Barangay Balibago', 'Barangay Tagapo'],
-    },
-  };
+  final List<String> _licenseCodes = licenseCodeOptions;
 
   /// Required field ids per step, in the order they appear on screen.
   static const Map<int, List<String>> _required = {
@@ -165,6 +158,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     ]) {
       _fields[id] = TextEditingController();
     }
+    _loadProvinces();
   }
 
   @override
@@ -212,15 +206,15 @@ class _RegisterScreenState extends State<RegisterScreen> {
       case 'barangay':
         return _barangay == null ? 'Select a barangay.' : null;
       case 'validId':
-        return _files['validId'] == null
+        return _docs['validId'] == null
             ? 'Upload a photo of your valid ID.'
             : null;
       case 'license':
-        return _files['license'] == null
+        return _docs['license'] == null
             ? "Upload your driver's license."
             : null;
       case 'orCr':
-        return _files['orCr'] == null ? 'Upload your OR / CR.' : null;
+        return _docs['orCr'] == null ? 'Upload your OR / CR.' : null;
       case 'agreed':
         return _agreed ? null : 'Please accept the terms to continue.';
       default:
@@ -434,8 +428,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
     });
   }
 
+  /// Opens the camera or the gallery for real, keeps the shot, and — for the
+  /// driver's license and the OR / CR — reads the printed details off it.
   Future<void> _pickDocument(String id) async {
-    final source = await showModalBottomSheet<String>(
+    final source = await showModalBottomSheet<ImageSource>(
       context: context,
       backgroundColor: AppColors.card,
       shape: const RoundedRectangleBorder(
@@ -464,9 +460,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 6),
-              const Text(
-                'JPG or PNG, clear and readable.',
-                style: TextStyle(fontSize: 13, color: AppColors.muted),
+              Text(
+                id == 'license' || id == 'orCr'
+                    ? 'Take a clear, well-lit photo — the details are filled in '
+                          'for you automatically.'
+                    : 'JPG or PNG, clear and readable.',
+                style: const TextStyle(fontSize: 13, color: AppColors.muted),
               ),
               const SizedBox(height: 8),
               ListTile(
@@ -474,8 +473,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   Icons.photo_camera_outlined,
                   color: AppColors.primary,
                 ),
-                title: const Text('Take photo'),
-                onTap: () => Navigator.pop(context, 'camera'),
+                title: const Text('Open camera'),
+                subtitle: const Text('Take a photo now'),
+                onTap: () => Navigator.pop(context, ImageSource.camera),
               ),
               ListTile(
                 leading: const Icon(
@@ -483,7 +483,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   color: AppColors.primary,
                 ),
                 title: const Text('Choose from gallery'),
-                onTap: () => Navigator.pop(context, 'gallery'),
+                subtitle: const Text('Pick a photo you already have'),
+                onTap: () => Navigator.pop(context, ImageSource.gallery),
               ),
             ],
           ),
@@ -491,12 +492,557 @@ class _RegisterScreenState extends State<RegisterScreen> {
       ),
     );
     if (source == null || !mounted) return;
-    final names = {
-      'validId': 'valid_id.jpg',
-      'license': 'drivers_license.jpg',
-      'orCr': 'or_cr.jpg',
-    };
-    setState(() => _files[id] = names[id] ?? 'document.jpg');
+
+    XFile? shot;
+    try {
+      shot = await ImagePicker().pickImage(
+        source: source,
+        imageQuality: 90,
+        maxWidth: 2000,
+        maxHeight: 2000,
+      );
+    } on PlatformException catch (error) {
+      if (!mounted) return;
+      _toast(
+        source == ImageSource.camera
+            ? 'Could not open the camera: ${error.message ?? error.code}.'
+            : 'Could not open the gallery: ${error.message ?? error.code}.',
+      );
+      return;
+    } catch (error) {
+      if (!mounted) return;
+      _toast('Could not read that file: $error');
+      return;
+    }
+    if (shot == null || !mounted) return;
+
+    final doc = shot;
+    setState(() {
+      _docs[id] = doc;
+      _flagged.remove(id);
+    });
+
+    if (id == 'license' || id == 'orCr') await _readDocument(id, doc);
+  }
+
+  /// Runs on-device OCR and fills the matching form fields.
+  Future<void> _readDocument(String id, XFile shot) async {
+    setState(() => _scanning = true);
+    try {
+      final scan = id == 'license'
+          ? await DocumentReader.license(shot.path)
+          : await DocumentReader.orCr(shot.path);
+      if (!mounted) return;
+      if (scan.isEmpty) {
+        _toast(
+          'Photo saved, but no details could be read. Please type them in.',
+        );
+        return;
+      }
+
+      var filled = 0;
+      setState(() {
+        scan.fields.forEach((field, value) {
+          final text = value.trim();
+          if (text.isEmpty) return;
+          if (field == 'vehicleType') {
+            _vehicleType = text;
+            filled++;
+            return;
+          }
+          if (field == 'dlCode') {
+            _dlCode = text;
+            filled++;
+            return;
+          }
+          final controller = _fields[field];
+          if (controller == null) return;
+          controller.text = text;
+          filled++;
+        });
+        _flagged.removeAll(scan.fields.keys.toList());
+      });
+
+      _toast(
+        filled == 0
+            ? 'Photo saved, but no details could be read. Please type them in.'
+            : 'Filled $filled fields from your '
+                  '${id == 'license' ? "driver's license" : 'OR / CR'}. '
+                  'Please check them before continuing.',
+      );
+    } catch (error) {
+      if (!mounted) return;
+      debugPrint('Nuvora document scan: $error');
+      _toast(
+        'Photo saved, but the details could not be read automatically. '
+        'Please type them in.',
+      );
+    } finally {
+      if (mounted) setState(() => _scanning = false);
+    }
+  }
+
+  void _toast(String message) {
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  // ── Philippine address (live PSGC data) ──────────────────────────────
+  Future<void> _loadProvinces() async {
+    setState(() {
+      _loadingProvinces = true;
+      _provinceError = null;
+    });
+    try {
+      final provinces = await PhAddressApi.instance.provinces();
+      if (!mounted) return;
+      setState(() {
+        _provinces = provinces;
+        _loadingProvinces = false;
+      });
+    } on RiderApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _provinceError = error.message;
+        _loadingProvinces = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _provinceError = 'Could not load provinces from Nuvora.';
+        _loadingProvinces = false;
+      });
+    }
+  }
+
+  Future<void> _loadCities(PhPlace province) async {
+    setState(() {
+      _loadingCities = true;
+      _cityError = null;
+      _cities = const [];
+    });
+    try {
+      final cities = await PhAddressApi.instance.cities(province.code);
+      if (!mounted) return;
+      setState(() {
+        _cities = cities;
+        _loadingCities = false;
+      });
+    } on RiderApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _cityError = error.message;
+        _loadingCities = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _cityError = 'Could not load cities and municipalities.';
+        _loadingCities = false;
+      });
+    }
+  }
+
+  Future<void> _loadBarangays(PhPlace city) async {
+    setState(() {
+      _loadingBarangays = true;
+      _barangayError = null;
+      _barangays = const [];
+    });
+    try {
+      final barangays = await PhAddressApi.instance.barangays(city);
+      if (!mounted) return;
+      setState(() {
+        _barangays = barangays;
+        _loadingBarangays = false;
+      });
+    } on RiderApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _barangayError = error.message;
+        _loadingBarangays = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _barangayError = 'Could not load barangays.';
+        _loadingBarangays = false;
+      });
+    }
+  }
+
+  void _chooseProvince(PhPlace place) {
+    setState(() {
+      _provincePlace = place;
+      _province = place.name;
+      _cityPlace = null;
+      _city = null;
+      _barangay = null;
+      _cities = const [];
+      _barangays = const [];
+      _cityError = null;
+      _barangayError = null;
+      _flagged.removeAll(const ['province', 'city', 'barangay']);
+    });
+    _loadCities(place);
+  }
+
+  void _chooseCity(PhPlace place) {
+    setState(() {
+      _cityPlace = place;
+      _city = place.name;
+      _barangay = null;
+      _barangays = const [];
+      _barangayError = null;
+      _flagged.removeAll(const ['city', 'barangay']);
+    });
+    _loadBarangays(place);
+  }
+
+  void _chooseBarangay(PhPlace place) {
+    setState(() {
+      _barangay = place.name;
+      _flagged.remove('barangay');
+    });
+  }
+
+  /// A tappable field that opens the searchable list of every option, so all
+  /// 82 provinces / all cities / all barangays are reachable, not just a few.
+  Widget _addressField({
+    required String hint,
+    required String searchHint,
+    required String? value,
+    required List<PhPlace> options,
+    required bool loading,
+    required String? error,
+    required ValueChanged<PhPlace> onPick,
+    required VoidCallback onRetry,
+  }) {
+    final hasError = error != null;
+    final enabled = !loading && options.isNotEmpty;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InkWell(
+          onTap: enabled
+              ? () async {
+                  final picked = await _showOptionSheet(
+                    searchHint,
+                    options,
+                    current: value,
+                  );
+                  if (picked != null) onPick(picked);
+                }
+              : null,
+          borderRadius: BorderRadius.circular(12),
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+            decoration: BoxDecoration(
+              color: AppColors.card,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: hasError ? AppColors.danger : AppColors.border,
+                width: 1.2,
+              ),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    loading ? 'Loading…' : (value ?? hint),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: value == null
+                          ? FontWeight.w400
+                          : FontWeight.w700,
+                      color: value == null ? AppColors.muted : AppColors.ink,
+                    ),
+                  ),
+                ),
+                if (loading)
+                  const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: AppColors.primary,
+                    ),
+                  )
+                else
+                  const Icon(Icons.expand_more_rounded, color: AppColors.muted),
+              ],
+            ),
+          ),
+        ),
+        if (error != null) ...[
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              const Icon(
+                Icons.error_outline,
+                size: 14,
+                color: AppColors.danger,
+              ),
+              const SizedBox(width: 5),
+              Expanded(
+                child: Text(
+                  error,
+                  style: const TextStyle(fontSize: 12, color: AppColors.danger),
+                ),
+              ),
+              TextButton(
+                onPressed: onRetry,
+                style: TextButton.styleFrom(
+                  foregroundColor: AppColors.primaryDark,
+                  minimumSize: const Size(50, 32),
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  textStyle: const TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                child: const Text('Try again'),
+              ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+
+  Future<PhPlace?> _showOptionSheet(
+    String title,
+    List<PhPlace> options, {
+    String? current,
+  }) {
+    return showModalBottomSheet<PhPlace>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppColors.card,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) {
+        var query = '';
+        return StatefulBuilder(
+          builder: (context, setSheet) {
+            final q = query.trim().toLowerCase();
+            final shown = q.isEmpty
+                ? options
+                : [
+                    for (final option in options)
+                      if (option.name.toLowerCase().contains(q)) option,
+                  ];
+
+            return Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(context).viewInsets.bottom,
+              ),
+              child: SizedBox(
+                height: MediaQuery.of(context).size.height * 0.75,
+                child: Column(
+                  children: [
+                    const SizedBox(height: 12),
+                    Container(
+                      width: 40,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: AppColors.border,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              title,
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w800,
+                                color: AppColors.ink,
+                              ),
+                            ),
+                          ),
+                          Text(
+                            '${shown.length}',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: AppColors.muted,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                      child: TextField(
+                        autofocus: true,
+                        onChanged: (value) => setSheet(() => query = value),
+                        decoration: const InputDecoration(
+                          hintText: 'Search…',
+                          prefixIcon: Icon(
+                            Icons.search_rounded,
+                            size: 19,
+                            color: AppColors.muted,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Expanded(
+                      child: shown.isEmpty
+                          ? const Center(
+                              child: Text(
+                                'No matching results.',
+                                style: TextStyle(color: AppColors.muted),
+                              ),
+                            )
+                          : ListView.builder(
+                              padding: const EdgeInsets.fromLTRB(8, 0, 8, 16),
+                              itemCount: shown.length,
+                              itemBuilder: (context, index) {
+                                final place = shown[index];
+                                final selected = place.name == current;
+                                return ListTile(
+                                  title: Text(
+                                    place.name,
+                                    style: const TextStyle(
+                                      fontSize: 14,
+                                      color: AppColors.ink,
+                                    ),
+                                  ),
+                                  trailing: selected
+                                      ? const Icon(
+                                          Icons.check_rounded,
+                                          color: AppColors.primary,
+                                          size: 18,
+                                        )
+                                      : null,
+                                  onTap: () => Navigator.pop(context, place),
+                                );
+                              },
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _uploadField(String id, {required String hint}) {
+    final doc = _docs[id];
+    final hasError = _error(id) != null;
+    final canScan = id == 'license' || id == 'orCr';
+
+    return InkWell(
+      onTap: _scanning ? null : () => _pickDocument(id),
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+        decoration: BoxDecoration(
+          color: doc == null ? AppColors.mint : AppColors.card,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: hasError
+                ? AppColors.danger
+                : (doc == null ? AppColors.mintStrong : AppColors.primary),
+            width: 1.2,
+          ),
+        ),
+        child: Row(
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(11),
+              child: doc == null
+                  ? Container(
+                      width: 38,
+                      height: 38,
+                      decoration: BoxDecoration(
+                        color: AppColors.primary,
+                        borderRadius: BorderRadius.circular(11),
+                      ),
+                      child: const Icon(
+                        Icons.upload_file_outlined,
+                        color: Colors.white,
+                        size: 20,
+                      ),
+                    )
+                  : Image.file(
+                      File(doc.path),
+                      width: 38,
+                      height: 38,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) => Container(
+                        width: 38,
+                        height: 38,
+                        decoration: BoxDecoration(
+                          color: AppColors.mint,
+                          borderRadius: BorderRadius.circular(11),
+                        ),
+                        child: const Icon(
+                          Icons.check_circle_outline,
+                          color: AppColors.primary,
+                          size: 20,
+                        ),
+                      ),
+                    ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    doc?.name ?? hint,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      color: doc == null
+                          ? AppColors.ink
+                          : AppColors.primaryDark,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    doc == null
+                        ? (canScan
+                              ? 'Camera or gallery · details fill in'
+                              : 'Tap to attach')
+                        : (canScan
+                              ? 'Attached · details filled in'
+                              : 'Attached · tap to replace'),
+                    style: const TextStyle(
+                      fontSize: 11.5,
+                      color: AppColors.muted,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              Icons.chevron_right_rounded,
+              color: doc == null ? AppColors.muted : AppColors.primary,
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   // ── Small building blocks ────────────────────────────────────────────────
@@ -669,82 +1215,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
         onChanged(v);
         setState(() {});
       },
-    );
-  }
-
-  Widget _uploadField(String id, {required String hint}) {
-    final file = _files[id];
-    final hasError = _error(id) != null;
-    return InkWell(
-      onTap: () => _pickDocument(id),
-      borderRadius: BorderRadius.circular(14),
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
-        decoration: BoxDecoration(
-          color: file == null ? AppColors.mint : AppColors.card,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: hasError
-                ? AppColors.danger
-                : (file == null ? AppColors.mintStrong : AppColors.primary),
-            width: 1.2,
-          ),
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 38,
-              height: 38,
-              decoration: BoxDecoration(
-                color: file == null ? AppColors.primary : AppColors.mint,
-                borderRadius: BorderRadius.circular(11),
-              ),
-              child: Icon(
-                file == null
-                    ? Icons.upload_file_outlined
-                    : Icons.check_circle_outline,
-                color: file == null ? Colors.white : AppColors.primary,
-                size: 20,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    file ?? hint,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                      color: file == null
-                          ? AppColors.ink
-                          : AppColors.primaryDark,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    file == null
-                        ? 'Tap to attach'
-                        : 'Attached · tap to replace',
-                    style: const TextStyle(
-                      fontSize: 11.5,
-                      color: AppColors.muted,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            Icon(
-              Icons.chevron_right_rounded,
-              color: file == null ? AppColors.muted : AppColors.primary,
-            ),
-          ],
-        ),
-      ),
     );
   }
 
@@ -1241,13 +1711,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   Widget _step3() {
-    final cities = _province == null
-        ? const <String>[]
-        : (_locations[_province]!.keys.toList()..sort());
-    final barangays = (_province == null || _city == null)
-        ? const <String>[]
-        : _locations[_province]![_city]!;
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1271,16 +1734,15 @@ class _RegisterScreenState extends State<RegisterScreen> {
         _col(
           'province',
           'Province',
-          _dropdown(
-            'province',
+          _addressField(
             hint: 'Select province',
-            options: _locations.keys.toList()..sort(),
+            searchHint: 'Search province',
             value: _province,
-            onChanged: (v) {
-              _province = v;
-              _city = null;
-              _barangay = null;
-            },
+            options: _provinces,
+            loading: _loadingProvinces,
+            error: _provinceError,
+            onPick: _chooseProvince,
+            onRetry: _loadProvinces,
           ),
           required: true,
         ),
@@ -1288,14 +1750,19 @@ class _RegisterScreenState extends State<RegisterScreen> {
         _col(
           'city',
           'Municipality / City',
-          _dropdown(
-            'city',
-            hint: 'Select municipality or city',
-            options: cities,
+          _addressField(
+            hint: _province == null
+                ? 'Select a province first'
+                : 'Select municipality or city',
+            searchHint: 'Search city or municipality',
             value: _city,
-            onChanged: (v) {
-              _city = v;
-              _barangay = null;
+            options: _cities,
+            loading: _loadingCities,
+            error: _cityError,
+            onPick: _chooseCity,
+            onRetry: () {
+              final place = _provincePlace;
+              if (place != null) _loadCities(place);
             },
           ),
           required: true,
@@ -1304,12 +1771,20 @@ class _RegisterScreenState extends State<RegisterScreen> {
         _col(
           'barangay',
           'Barangay',
-          _dropdown(
-            'barangay',
-            hint: 'Select barangay',
-            options: barangays,
+          _addressField(
+            hint: _city == null
+                ? 'Select a city or municipality first'
+                : 'Select barangay',
+            searchHint: 'Search barangay',
             value: _barangay,
-            onChanged: (v) => _barangay = v,
+            options: _barangays,
+            loading: _loadingBarangays,
+            error: _barangayError,
+            onPick: _chooseBarangay,
+            onRetry: () {
+              final place = _cityPlace;
+              if (place != null) _loadBarangays(place);
+            },
           ),
           required: true,
         ),
@@ -1352,11 +1827,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
       ('Sex', v(_sex ?? '')),
       ('Birthday', v(_value('birthday'))),
       ('Age', v(_value('age'))),
-      ('Valid ID', _files['validId'] ?? '—'),
+      ('Valid ID', _docs['validId']?.name ?? '—'),
       ('Vehicle Type', v(_vehicleType ?? '')),
       ('Plate Number', v(_value('plate'))),
-      ("Driver's License", _files['license'] ?? '—'),
-      ('OR / CR', _files['orCr'] ?? '—'),
+      ("Driver's License", _docs['license']?.name ?? '—'),
+      ('OR / CR', _docs['orCr']?.name ?? '—'),
       ('License No.', v(_value('dlLicenseNo'))),
       ('MV File No.', v(_value('mvFile'))),
     ];
@@ -1620,27 +2095,70 @@ class _RegisterScreenState extends State<RegisterScreen> {
           },
         ),
       ),
-      body: Column(
+      body: Stack(
         children: [
-          Expanded(
-            child: SingleChildScrollView(
-              controller: _scroll,
-              padding: const EdgeInsets.fromLTRB(20, 4, 20, 28),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _stepBar(),
-                  const SizedBox(height: 24),
-                  IndexedStack(
-                    index: _currentStep,
-                    children: [_step1(), _step2(), _step3(), _step4()],
+          Column(
+            children: [
+              Expanded(
+                child: SingleChildScrollView(
+                  controller: _scroll,
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 28),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _stepBar(),
+                      const SizedBox(height: 24),
+                      IndexedStack(
+                        index: _currentStep,
+                        children: [_step1(), _step2(), _step3(), _step4()],
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
-            ),
+              _bottomBar(),
+            ],
           ),
-          _bottomBar(),
+          if (_scanning) Positioned.fill(child: _scanOverlay()),
         ],
+      ),
+    );
+  }
+
+  Widget _scanOverlay() {
+    return ColoredBox(
+      color: Colors.black.withAlpha(80),
+      child: Center(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+          decoration: BoxDecoration(
+            color: AppColors.card,
+            borderRadius: BorderRadius.circular(18),
+          ),
+          child: const Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                width: 26,
+                height: 26,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.4,
+                  color: AppColors.primary,
+                ),
+              ),
+              SizedBox(height: 14),
+              Text(
+                'Reading the document…',
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
+              ),
+              SizedBox(height: 4),
+              Text(
+                'The details are filled in when it is done.',
+                style: TextStyle(fontSize: 12, color: AppColors.muted),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

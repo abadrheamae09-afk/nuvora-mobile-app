@@ -4,4 +4,7 @@
          to allow setting breakpoints, to provide hot reload, etc.
     -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Same as the debug manifest: allow the plain-HTTP LAN server while
+         profiling, but keep release builds on HTTPS. -->
+    <application android:usesCleartextTraffic="true"/>
 </manifest>

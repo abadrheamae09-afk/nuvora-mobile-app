@@ -30,4 +30,12 @@ class AppColors {
   // Brand accent used on headers
   static const Color headerTop = Color(0xFF0B6B3A);
   static const Color headerBottom = Color(0xFF1FA85B);
+
+  // Soft tints: stage chips, icon wells and section markers
+  static const Color gold = Color(0xFFD9F99D);
+  static const Color goldSoft = Color(0xFFF2FBDD);
+  static const Color goldInk = Color(0xFF5F7A14);
+  static const Color mintSoft = Color(0xFFEFF9F2);
+  static const Color glass = Color(0x14FFFFFF);
+  static const Color glassBorder = Color(0x26FFFFFF);
 }
