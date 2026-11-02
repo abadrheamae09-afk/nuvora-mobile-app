@@ -1,233 +1,322 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
+import '../../core/data/rider_work.dart';
 import '../../theme/app_colors.dart';
 
+/// Accrued earnings plus the COD cash the rider is still holding.
 class EarningsScreen extends StatelessWidget {
   const EarningsScreen({super.key});
 
-  void _snack(BuildContext context, String message) {
-    ScaffoldMessenger.of(context)
-      ..clearSnackBars()
-      ..showSnackBar(SnackBar(content: Text(message)));
-  }
+  String _money(double value) => '₱${value.toStringAsFixed(2)}';
 
   @override
   Widget build(BuildContext context) {
-    const transactions = [
-      ('Order #NV-10241', 'Today \u00b7 Delivered', '+\u20b1180'),
-      ('Order #NV-10238', 'Today \u00b7 Delivered', '+\u20b1150'),
-      ('Delivery fee payout', 'Today \u00b7 3 completed trips', '+\u20b1420'),
-      ('Order #NV-10235', 'Yesterday \u00b7 Delivered', '+\u20b1220'),
-      ('COD remittance fee', 'Yesterday \u00b7 Service fee', '-\u20b135'),
-    ];
+    final store = RiderWorkStore.instance;
 
-    return SafeArea(
-      bottom: false,
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'My Earnings',
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: AppColors.ink),
-            ),
-            const SizedBox(height: 16),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(20),
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [AppColors.headerTop, AppColors.headerBottom],
-                ),
-                borderRadius: BorderRadius.all(Radius.circular(24)),
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle.light,
+      child: Scaffold(
+        backgroundColor: AppColors.background,
+        appBar: AppBar(
+          backgroundColor: AppColors.headerTop,
+          foregroundColor: Colors.white,
+          title: const Text(
+            'My Earnings',
+            style: TextStyle(color: Colors.white),
+          ),
+          iconTheme: const IconThemeData(color: Colors.white),
+        ),
+        body: ListenableBuilder(
+          listenable: store,
+          builder: (context, _) => RefreshIndicator(
+            color: AppColors.primary,
+            onRefresh: () async {},
+            child: ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: EdgeInsets.fromLTRB(
+                20,
+                20,
+                20,
+                110 + MediaQuery.of(context).padding.bottom,
               ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Accrued earnings',
-                    style: TextStyle(color: Colors.white.withAlpha(215), fontSize: 13),
-                  ),
-                  const SizedBox(height: 6),
-                  const Text(
-                    '\u20b16,845.00',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 34,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 0.3,
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-                  Row(
+              children: [
+                _card(
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      _heroStat('Today', '\u20b1750'),
-                      Container(width: 1, height: 28, color: Colors.white.withAlpha(70)),
-                      _heroStat('This week', '\u20b13,120'),
-                      Container(width: 1, height: 28, color: Colors.white.withAlpha(70)),
-                      _heroStat('This month', '\u20b112,480'),
+                      const Text(
+                        'Accrued earnings',
+                        style: TextStyle(color: AppColors.muted),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        _money(store.accruedTotal),
+                        style: const TextStyle(
+                          fontSize: 30,
+                          fontWeight: FontWeight.w800,
+                          color: AppColors.primaryDeep,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        '${store.earnings.length} completed credits · accrued from '
+                        'completed deliveries',
+                        style: const TextStyle(color: AppColors.muted),
+                      ),
+                      const SizedBox(height: 10),
+                      const Text(
+                        'Accrued amounts are not a cash or bank payout yet. Nuvora '
+                        'will hand these over through your Station Hub.',
+                        style: TextStyle(color: AppColors.muted, height: 1.35),
+                      ),
                     ],
                   ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 14),
-            Row(
-              children: [
-                _infoCard('Completed trips', '41', Icons.check_circle_outline),
-                const SizedBox(width: 10),
-                _infoCard('COD collected', '\u20b18,450', Icons.payments_outlined),
-                const SizedBox(width: 10),
-                _infoCard('Avg. per trip', '\u20b1167', Icons.timeline_outlined),
-              ],
-            ),
-            const SizedBox(height: 22),
-            const Text(
-              'Recent transactions',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: AppColors.ink),
-            ),
-            const SizedBox(height: 10),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(vertical: 6),
-              decoration: BoxDecoration(
-                color: AppColors.card,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: AppColors.border),
-              ),
-              child: Column(
-                children: [
-                  for (var i = 0; i < transactions.length; i++) ...[
-                    ListTile(
-                      onTap: () => _snack(context, '${transactions[i].$1} \u00b7 ${transactions[i].$2}'),
-                      leading: Container(
-                        width: 38,
-                        height: 38,
-                        decoration: BoxDecoration(
-                          color: transactions[i].$3.startsWith('+')
-                              ? AppColors.mint
-                              : AppColors.dangerSoft,
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Icon(
-                          transactions[i].$3.startsWith('+')
-                              ? Icons.south_rounded
-                              : Icons.north_rounded,
-                          size: 18,
-                          color: transactions[i].$3.startsWith('+')
-                              ? AppColors.primaryDark
-                              : AppColors.danger,
-                        ),
+                ),
+                const SizedBox(height: 18),
+                const _SectionTitle('Cash on hand'),
+                const SizedBox(height: 8),
+                _card(
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            width: 42,
+                            height: 42,
+                            decoration: BoxDecoration(
+                              color: AppColors.goldSoft,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: const Icon(
+                              Icons.payments_outlined,
+                              color: AppColors.goldInk,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'COD cash you are holding',
+                                  style: TextStyle(
+                                    fontSize: 12.5,
+                                    color: AppColors.muted,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  _money(store.cashOnHand),
+                                  style: const TextStyle(
+                                    fontSize: 28,
+                                    fontWeight: FontWeight.w800,
+                                    color: AppColors.primaryDeep,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
                       ),
-                      title: Text(
-                        transactions[i].$1,
-                        style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700),
+                      const SizedBox(height: 10),
+                      const Text(
+                        'This is not your pay. It leaves this total when your Station '
+                        'Hub records that it received the cash.',
+                        style: TextStyle(color: AppColors.muted, height: 1.35),
                       ),
-                      subtitle: Text(
-                        transactions[i].$2,
-                        style: const TextStyle(fontSize: 12, color: AppColors.muted),
-                      ),
-                      trailing: Text(
-                        transactions[i].$3,
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w800,
-                          color: transactions[i].$3.startsWith('+')
-                              ? AppColors.primaryDark
-                              : AppColors.danger,
-                        ),
-                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 18),
+                const _SectionTitle('Recent earnings'),
+                const SizedBox(height: 8),
+                if (store.earnings.isEmpty)
+                  _card(
+                    const Text(
+                      'No completed deliveries yet.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: AppColors.muted),
                     ),
-                    if (i != transactions.length - 1)
-                      const Divider(height: 1, indent: 70, color: AppColors.border),
-                  ],
-                ],
-              ),
-            ),
-            const SizedBox(height: 12),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: AppColors.mint,
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: const Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(Icons.info_outline, size: 17, color: AppColors.primaryDark),
-                  SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      'Accrued amounts are not a cash or bank payout. Cash out becomes '
-                      'available once payouts are enabled for your account.',
-                      style: TextStyle(fontSize: 12.5, color: AppColors.primaryDeep, height: 1.45),
+                  )
+                else
+                  ...store.earnings.map(
+                    (row) => _card(
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.check_circle_outline_rounded,
+                            color: AppColors.primary,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  row.order,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                    color: AppColors.ink,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  '${row.hub} · ${row.date}',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: AppColors.muted,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Text(
+                            _money(row.amount),
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w800,
+                              color: AppColors.primaryDeep,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                ],
-              ),
+                const SizedBox(height: 18),
+                const _SectionTitle('COD collections'),
+                const SizedBox(height: 8),
+                if (store.collections.isEmpty)
+                  _card(
+                    const Text(
+                      'No COD cash waiting to be handed over.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: AppColors.muted),
+                    ),
+                  )
+                else
+                  ...store.collections.map(
+                    (row) => _card(
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.receipt_long_outlined,
+                            color: AppColors.primaryDark,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  row.order,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                    color: AppColors.ink,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Row(
+                                  children: [
+                                    Text(
+                                      row.date,
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        color: AppColors.muted,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    _StatusChip(label: row.status),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            _money(row.amount),
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w800,
+                              color: AppColors.primaryDeep,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _heroStat(String label, String value) {
-    return Expanded(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            value,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 15,
-              fontWeight: FontWeight.w800,
-            ),
+  Widget _card(Widget child) => Container(
+    width: double.infinity,
+    margin: const EdgeInsets.only(bottom: 10),
+    padding: const EdgeInsets.all(18),
+    decoration: BoxDecoration(
+      color: Colors.white,
+      border: Border.all(color: AppColors.border),
+      borderRadius: BorderRadius.circular(16),
+    ),
+    child: child,
+  );
+}
+
+class _SectionTitle extends StatelessWidget {
+  const _SectionTitle(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Container(
+          width: 3,
+          height: 16,
+          decoration: BoxDecoration(
+            color: AppColors.primary,
+            borderRadius: BorderRadius.circular(2),
           ),
-          const SizedBox(height: 2),
-          Text(
-            label,
-            style: TextStyle(color: Colors.white.withAlpha(200), fontSize: 11),
+        ),
+        const SizedBox(width: 8),
+        Text(
+          text,
+          style: const TextStyle(
+            color: AppColors.ink,
+            fontSize: 16,
+            fontWeight: FontWeight.w700,
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
+}
 
-  Widget _infoCard(String label, String value, IconData icon) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(12, 14, 12, 14),
-        decoration: BoxDecoration(
-          color: AppColors.card,
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: AppColors.border),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(icon, size: 18, color: AppColors.primary),
-            const SizedBox(height: 8),
-            Text(
-              value,
-              style: const TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w800,
-                color: AppColors.ink,
-              ),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              label,
-              maxLines: 2,
-              style: const TextStyle(fontSize: 11, color: AppColors.muted, height: 1.3),
-            ),
-          ],
+class _StatusChip extends StatelessWidget {
+  const _StatusChip({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final received = label.toLowerCase().contains('received');
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: received ? AppColors.mint : AppColors.goldSoft,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 10.5,
+          fontWeight: FontWeight.w700,
+          color: received ? AppColors.primaryDark : AppColors.goldInk,
         ),
       ),
     );

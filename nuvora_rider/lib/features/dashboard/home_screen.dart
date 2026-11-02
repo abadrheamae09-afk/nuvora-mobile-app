@@ -1,294 +1,529 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
+import '../../core/data/rider_session.dart';
+import '../../core/data/rider_work.dart';
 import '../../theme/app_colors.dart';
+import '../scanner/parcel_scanner_screen.dart';
+import 'delivery_detail_screen.dart';
 
-class HomeScreen extends StatelessWidget {
-  const HomeScreen({super.key});
+const double _radius = 16;
 
-  void _snack(BuildContext context, String message) {
-    ScaffoldMessenger.of(context)
-      ..clearSnackBars()
-      ..showSnackBar(SnackBar(content: Text(message)));
+/// Rider home: greeting header with accrued earnings, the scan action, a parcel
+/// overview and the next active delivery.
+class HomeScreen extends StatefulWidget {
+  final VoidCallback? onOpenParcels;
+  final VoidCallback? onOpenEarnings;
+  final VoidCallback? onOpenNotifications;
+
+  const HomeScreen({
+    super.key,
+    this.onOpenParcels,
+    this.onOpenEarnings,
+    this.onOpenNotifications,
+  });
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen>
+    with SingleTickerProviderStateMixin {
+  final _store = RiderWorkStore.instance;
+
+  // Drives the animated header backdrop (loops forever, 0.0 → 1.0).
+  late final AnimationController _bgController;
+
+  @override
+  void initState() {
+    super.initState();
+    _bgController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 14),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _bgController.dispose();
+    super.dispose();
+  }
+
+  String get _greeting {
+    final hour = DateTime.now().hour;
+    if (hour < 12) return 'Good morning';
+    if (hour < 18) return 'Good afternoon';
+    return 'Good evening';
+  }
+
+  String get _today {
+    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    final now = DateTime.now();
+    return '${days[now.weekday - 1]}, ${now.day} ${months[now.month - 1]}';
+  }
+
+  String _money(double value) => '₱${value.toStringAsFixed(2)}';
+
+  Future<void> _openScanner() async {
+    HapticFeedback.selectionClick();
+    final code = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(builder: (_) => const ParcelScannerScreen()),
+    );
+    if (!mounted || code == null) return;
+
+    final parcel = _store.find(code);
+    if (parcel == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No parcel assigned to you matches "$code".')),
+      );
+      widget.onOpenParcels?.call();
+      return;
+    }
+    await _openParcel(parcel);
+  }
+
+  Future<void> _openParcel(RiderParcel parcel) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => DeliveryDetailScreen(parcel: parcel)),
+    );
+    if (mounted) setState(() {});
   }
 
   @override
   Widget build(BuildContext context) {
-    return SafeArea(
-      bottom: false,
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      // Light status bar icons because the header is dark.
+      value: SystemUiOverlayStyle.light,
+      child: Scaffold(
+        backgroundColor: AppColors.background,
+        body: ListenableBuilder(
+          listenable: _store,
+          builder: (context, _) {
+            final active = _store.parcels.isEmpty ? null : _store.parcels.first;
+            return SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildHeaderPanel(),
+                  Padding(
+                    padding: EdgeInsets.fromLTRB(
+                      20,
+                      24,
+                      20,
+                      28 + MediaQuery.of(context).padding.bottom,
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _buildScanButton(),
+                        const SizedBox(height: 24),
+                        _buildSectionTitle('Parcel overview'),
+                        const SizedBox(height: 12),
+                        _buildStats(),
+                        const SizedBox(height: 28),
+                        _buildActiveDelivery(active),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  // ── Shared flat card ──────────────────────────────────────────────────────
+  Widget _card({
+    required Widget child,
+    VoidCallback? onTap,
+    EdgeInsets padding = const EdgeInsets.all(16),
+  }) {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(_radius),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(_radius),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(padding: padding, child: child),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSectionTitle(String text) {
+    return Row(
+      children: [
+        Container(
+          width: 3,
+          height: 16,
+          decoration: BoxDecoration(
+            color: AppColors.primary,
+            borderRadius: BorderRadius.circular(2),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Text(
+          text,
+          style: const TextStyle(
+            color: AppColors.ink,
+            fontSize: 16,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ── Green header: animated backdrop + greeting + earnings ─────────────────
+  Widget _buildHeaderPanel() {
+    final topInset = MediaQuery.of(context).padding.top;
+
+    return ClipRRect(
+      borderRadius: const BorderRadius.only(
+        bottomLeft: Radius.circular(28),
+        bottomRight: Radius.circular(28),
+      ),
+      child: Container(
+        width: double.infinity,
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [AppColors.headerBottom, AppColors.headerTop],
+          ),
+        ),
+        child: Stack(
           children: [
-            _header(context),
-            const SizedBox(height: 18),
-            _statsCard(),
-            const SizedBox(height: 22),
-            _sectionTitle('Active assignment', trailing: 'Today'),
-            const SizedBox(height: 10),
-            _assignmentCard(context),
-            const SizedBox(height: 22),
-            _sectionTitle('Today\u2019s summary'),
-            const SizedBox(height: 10),
-            _summaryCard(context),
+            Positioned.fill(
+              child: IgnorePointer(
+                child: RepaintBoundary(
+                  child: AnimatedBuilder(
+                    animation: _bgController,
+                    builder: (context, _) => CustomPaint(
+                      painter: _HeaderBackdropPainter(_bgController.value),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Padding(
+              padding: EdgeInsets.fromLTRB(20, topInset + 20, 20, 24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildHeaderRow(),
+                  const SizedBox(height: 20),
+                  _buildEarningsCard(),
+                ],
+              ),
+            ),
           ],
         ),
       ),
     );
   }
 
-  Widget _header(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(18, 18, 18, 20),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [AppColors.headerTop, AppColors.headerBottom],
-        ),
-        borderRadius: BorderRadius.circular(24),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+  Widget _buildHeaderRow() {
+    final session = RiderSession.instance;
+
+    return Row(
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                width: 46,
-                height: 46,
-                decoration: BoxDecoration(
-                  color: Colors.white.withAlpha(40),
-                  shape: BoxShape.circle,
-                ),
-                alignment: Alignment.center,
-                child: const Text(
-                  'JD',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w800,
-                    fontSize: 15,
-                  ),
+              Text(
+                _greeting,
+                style: const TextStyle(
+                  color: Color(0xB3FFFFFF),
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
                 ),
               ),
-              const SizedBox(width: 12),
+              const SizedBox(height: 2),
+              Text(
+                session.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 24,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: AppColors.glass,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: AppColors.glassBorder),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration: const BoxDecoration(
+                        color: AppColors.gold,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    const Text(
+                      'Online',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      width: 1,
+                      height: 10,
+                      color: const Color(0x40FFFFFF),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      _today,
+                      style: const TextStyle(
+                        color: Color(0xB3FFFFFF),
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 16),
+        Semantics(
+          button: true,
+          label: 'Notifications',
+          child: Material(
+            color: AppColors.glass,
+            shape: const CircleBorder(),
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              onTap: widget.onOpenNotifications,
+              child: Container(
+                width: 52,
+                height: 52,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: AppColors.glassBorder),
+                ),
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    const Icon(
+                      Icons.notifications_none_rounded,
+                      color: Colors.white,
+                      size: 25,
+                    ),
+                    if (_store.unreadCount > 0)
+                      Positioned(
+                        right: 13,
+                        top: 13,
+                        child: Container(
+                          width: 8,
+                          height: 8,
+                          decoration: const BoxDecoration(
+                            color: AppColors.gold,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildEarningsCard() {
+    return Material(
+      color: AppColors.glass,
+      borderRadius: BorderRadius.circular(_radius),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: widget.onOpenEarnings,
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(_radius),
+            border: Border.all(color: AppColors.glassBorder),
+          ),
+          child: Row(
+            children: [
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      'Good morning,',
+                    const Text(
+                      'Accrued earnings',
                       style: TextStyle(
-                        color: Colors.white.withAlpha(215),
-                        fontSize: 12.5,
+                        color: Color(0xB3FFFFFF),
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
                       ),
                     ),
-                    const Text(
-                      'Juan Dela Cruz',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 17,
+                    const SizedBox(height: 4),
+                    Text(
+                      _money(_store.accruedTotal),
+                      style: const TextStyle(
+                        color: AppColors.gold,
+                        fontSize: 28,
                         fontWeight: FontWeight.w800,
                       ),
                     ),
                   ],
                 ),
               ),
-              _iconButton(
-                Icons.notifications_outlined,
-                onTap: () => _snack(context, 'No new notifications.'),
+              const Text(
+                'Details',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const Icon(
+                Icons.chevron_right_rounded,
+                color: Colors.white,
+                size: 20,
               ),
             ],
           ),
-          const SizedBox(height: 16),
-          Row(
+        ),
+      ),
+    );
+  }
+
+  // ── Main action ───────────────────────────────────────────────────────────
+  Widget _buildScanButton() {
+    return Material(
+      color: AppColors.primary,
+      borderRadius: BorderRadius.circular(_radius),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: _openScanner,
+        child: const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 18, vertical: 18),
+          child: Row(
             children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: Colors.white.withAlpha(38),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
+              Icon(
+                Icons.qr_code_scanner_rounded,
+                color: Colors.white,
+                size: 30,
+              ),
+              SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Icon(Icons.circle, size: 8, color: Color(0xFFB9F6CA)),
-                    SizedBox(width: 6),
                     Text(
-                      'Online \u00b7 Accepting jobs',
-                      style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
+                      'Scan a parcel',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    SizedBox(height: 2),
+                    Text(
+                      'Pick up, move and deliver by scanning',
+                      style: TextStyle(color: Color(0xCCFFFFFF), fontSize: 13),
                     ),
                   ],
                 ),
               ),
-              const Spacer(),
-              Text(
-                'Tue, 28 Oct',
-                style: TextStyle(color: Colors.white.withAlpha(215), fontSize: 12),
-              ),
+              Icon(Icons.arrow_forward_rounded, color: Colors.white, size: 22),
             ],
           ),
-        ],
-      ),
-    );
-  }
-
-  Widget _iconButton(IconData icon, {required VoidCallback onTap}) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        width: 38,
-        height: 38,
-        decoration: BoxDecoration(
-          color: Colors.white.withAlpha(35),
-          borderRadius: BorderRadius.circular(12),
         ),
-        child: Icon(icon, color: Colors.white, size: 20),
       ),
     );
   }
 
-  Widget _statsCard() {
-    const stats = [
-      ('3', 'Deliveries'),
-      ('\u20b1420', 'Earned today'),
-      ('4.9', 'Rating'),
-    ];
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(vertical: 18),
-      decoration: BoxDecoration(
-        color: AppColors.card,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Row(
-        children: [
-          Expanded(child: _StatCell(value: stats[0].$1, label: stats[0].$2)),
-          _VDivider(),
-          Expanded(child: _StatCell(value: stats[1].$1, label: stats[1].$2)),
-          _VDivider(),
-          Expanded(child: _StatCell(value: stats[2].$1, label: stats[2].$2)),
-        ],
-      ),
-    );
-  }
-
-  Widget _sectionTitle(String title, {String? trailing}) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Text(
-          title,
-          style: const TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w800,
-            color: AppColors.ink,
-          ),
-        ),
-        if (trailing != null)
-          Text(trailing, style: const TextStyle(fontSize: 12.5, color: AppColors.muted)),
-      ],
-    );
-  }
-
-  Widget _assignmentCard(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.card,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppColors.border),
-      ),
+  // ── Parcel stats: one card, four cells, thin dividers ─────────────────────
+  Widget _buildStats() {
+    return _card(
+      padding: EdgeInsets.zero,
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(
-                  color: AppColors.amberSoft,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Text(
-                  'Pickup',
-                  style: TextStyle(
-                    color: Color(0xFFB45309),
-                    fontSize: 11.5,
-                    fontWeight: FontWeight.w800,
-                  ),
+              Expanded(
+                child: _StatCell(
+                  icon: Icons.inventory_2_outlined,
+                  value: '${_store.parcels.length}',
+                  label: 'Assigned now',
                 ),
               ),
-              const SizedBox(width: 8),
-              const Text(
-                'Order #NV-10243',
-                style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700),
-              ),
-              const Spacer(),
-              const Text(
-                'ETA 10:40 AM',
-                style: TextStyle(fontSize: 11.5, color: AppColors.muted),
+              _VDivider(),
+              Expanded(
+                child: _StatCell(
+                  icon: Icons.assignment_turned_in_outlined,
+                  value: '${_store.pickupCount}',
+                  label: 'Pickup',
+                ),
               ),
             ],
           ),
-          const SizedBox(height: 4),
-          const Text(
-            'Handle with care \u00b7 2 parcels \u00b7 3.4 km',
-            style: TextStyle(fontSize: 12, color: AppColors.muted),
-          ),
-          const SizedBox(height: 16),
-          _routeStop(
-            icon: Icons.store_mall_directory_outlined,
-            color: AppColors.primary,
-            title: 'Green Mart, Cubao',
-            subtitle: 'Pickup point · 120 Aurora Blvd',
-            first: true,
-          ),
-          _routeStop(
-            icon: Icons.flag_outlined,
-            color: AppColors.blue,
-            title: 'M. Rodriguez St., Pasig',
-            subtitle: 'Drop-off · R. Alcantara',
-            first: false,
-          ),
-          const SizedBox(height: 14),
+          const Divider(height: 1, thickness: 1, color: AppColors.border),
           Row(
             children: [
               Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () => _snack(context, 'Opening route map\u2026'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: AppColors.ink,
-                    side: const BorderSide(color: AppColors.border),
-                    minimumSize: const Size(0, 44),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    textStyle: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700),
-                  ),
-                  icon: const Icon(Icons.map_outlined, size: 18),
-                  label: const Text('View route'),
+                child: _StatCell(
+                  icon: Icons.local_shipping_outlined,
+                  value: '${_store.deliveryCount}',
+                  label: 'Delivery',
                 ),
               ),
-              const SizedBox(width: 10),
+              _VDivider(),
               Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: () => _snack(context, 'Delivery marked as picked up.'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.primary,
-                    foregroundColor: Colors.white,
-                    elevation: 0,
-                    minimumSize: const Size(0, 44),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    textStyle: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w800),
-                  ),
-                  icon: const Icon(Icons.check_rounded, size: 18),
-                  label: const Text('Picked up'),
+                child: _StatCell(
+                  icon: Icons.near_me_outlined,
+                  value: '${_store.onTheWayCount}',
+                  label: 'On the way',
                 ),
               ),
             ],
@@ -298,127 +533,268 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  Widget _routeStop({
-    required IconData icon,
-    required Color color,
-    required String title,
-    required String subtitle,
-    required bool first,
-  }) {
-    return Row(
+  // ── Active delivery ───────────────────────────────────────────────────────
+  Widget _buildActiveDelivery(RiderParcel? parcel) {
+    return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Column(
-          children: [
-            Container(
-              width: 32,
-              height: 32,
-              decoration: BoxDecoration(color: color.withAlpha(26), shape: BoxShape.circle),
-              child: Icon(icon, size: 17, color: color),
+        _buildSectionTitle('Active delivery'),
+        const SizedBox(height: 12),
+        if (parcel == null)
+          _card(
+            onTap: widget.onOpenParcels,
+            child: const Text(
+              'No active assignments yet. Scan a parcel to start.',
+              style: TextStyle(color: AppColors.muted),
             ),
-            if (!first)
-              Container(
-                width: 2,
-                height: 26,
-                decoration: BoxDecoration(
-                  color: AppColors.border,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-          ],
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Padding(
-            padding: EdgeInsets.only(top: first ? 3 : 0),
+          )
+        else
+          _card(
+            onTap: () => _openParcel(parcel),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
-                const SizedBox(height: 2),
-                Text(subtitle, style: const TextStyle(fontSize: 12, color: AppColors.muted)),
-                if (!first) const SizedBox(height: 14),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        parcel.tracking,
+                        style: const TextStyle(
+                          color: AppColors.ink,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppColors.mint,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        riderStageBadge(parcel.stage),
+                        style: const TextStyle(
+                          color: AppColors.primaryDark,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    const Icon(Icons.place_outlined, color: AppColors.primary),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        riderStageSubtitle(parcel),
+                        style: const TextStyle(
+                          color: AppColors.ink,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                const Divider(height: 1, thickness: 1, color: AppColors.border),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.near_me_outlined,
+                      size: 16,
+                      color: AppColors.muted,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        riderStageTitle(parcel),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: AppColors.muted,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ),
+                    const Text(
+                      'View details',
+                      style: TextStyle(
+                        color: AppColors.primaryDark,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const Icon(
+                      Icons.chevron_right_rounded,
+                      color: AppColors.primaryDark,
+                      size: 20,
+                    ),
+                  ],
+                ),
               ],
             ),
           ),
-        ),
       ],
-    );
-  }
-
-  Widget _summaryCard(BuildContext context) {
-    const rows = [
-      (Icons.inventory_2_outlined, 'Parcels assigned', '5 of 8 completed'),
-      (Icons.schedule_outlined, 'On-time rate', '96% this week'),
-      (Icons.payments_outlined, 'Cash collected', '\u20b11,250'),
-    ];
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      decoration: BoxDecoration(
-        color: AppColors.card,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Column(
-        children: [
-          for (var i = 0; i < rows.length; i++) ...[
-            ListTile(
-              onTap: () => _snack(context, rows[i].$2),
-              leading: Container(
-                width: 38,
-                height: 38,
-                decoration: BoxDecoration(
-                  color: AppColors.mint,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Icon(rows[i].$1, size: 19, color: AppColors.primaryDark),
-              ),
-              title: Text(
-                rows[i].$2,
-                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
-              ),
-              subtitle: Text(
-                rows[i].$3,
-                style: const TextStyle(fontSize: 12.5, color: AppColors.muted),
-              ),
-              trailing: const Icon(Icons.chevron_right_rounded, color: AppColors.muted),
-            ),
-            if (i != rows.length - 1)
-              const Divider(height: 1, indent: 70, color: AppColors.border),
-          ],
-        ],
-      ),
     );
   }
 }
 
-class _StatCell extends StatelessWidget {
-  final String value;
-  final String label;
+// ─────────────────────────────────────────────────────────────────────────────
+// Animated header backdrop
+//
+// `t` loops from 0.0 to 1.0. Every movement uses whole sine cycles or
+// wrap-around values, so the loop is seamless.
+// ─────────────────────────────────────────────────────────────────────────────
+class _HeaderBackdropPainter extends CustomPainter {
+  _HeaderBackdropPainter(this.t);
 
-  const _StatCell({required this.value, required this.label});
+  final double t;
+
+  static const _twoPi = math.pi * 2;
+
+  static const _particles = <_Particle>[
+    _Particle(0.12, 0.00, 1, 3.0, AppColors.gold),
+    _Particle(0.28, 0.35, 1, 2.0, AppColors.primaryLight),
+    _Particle(0.42, 0.70, 1, 2.5, AppColors.gold),
+    _Particle(0.58, 0.15, 1, 3.5, AppColors.primaryLight),
+    _Particle(0.72, 0.55, 1, 2.0, AppColors.gold),
+    _Particle(0.86, 0.85, 1, 3.0, AppColors.primaryLight),
+    _Particle(0.94, 0.40, 1, 2.0, AppColors.gold),
+  ];
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.clipRect(Offset.zero & size);
+
+    final w = size.width;
+    final h = size.height;
+    final a = t * _twoPi;
+
+    final bigPaint = Paint()..color = Colors.white.withAlpha(16);
+    canvas.drawCircle(
+      Offset(w * 0.88 + math.sin(a) * 18, h * 0.10 + math.cos(a) * 14),
+      88,
+      bigPaint,
+    );
+
+    final deepPaint = Paint()..color = AppColors.primaryDeep.withAlpha(60);
+    canvas.drawCircle(
+      Offset(w * 0.08 + math.cos(a) * 16, h * 0.92 + math.sin(a) * 12),
+      78,
+      deepPaint,
+    );
+
+    final smallPaint = Paint()..color = Colors.white.withAlpha(12);
+    canvas.drawCircle(
+      Offset(w * 0.55 - math.sin(a) * 22, h * 0.50 + math.cos(a * 2) * 10),
+      44,
+      smallPaint,
+    );
+
+    // Two thin rings that expand and fade.
+    final ringCenter = Offset(
+      w * 0.88 + math.sin(a) * 18,
+      h * 0.10 + math.cos(a) * 14,
+    );
+    for (final phase in const [0.0, 0.5]) {
+      final p = (t + phase) % 1.0;
+      final radius = 40 + p * 100;
+      final alpha = ((1 - p) * 60).round().clamp(0, 255);
+      final ringPaint = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.2
+        ..color = AppColors.gold.withAlpha(alpha);
+      canvas.drawCircle(ringCenter, radius, ringPaint);
+    }
+
+    // Small dots floating upward, fading in and out.
+    for (final p in _particles) {
+      final prog = (t * p.speed + p.phase) % 1.0;
+      final y = h - prog * h;
+      final x = w * p.x + math.sin((t * p.speed + p.phase) * _twoPi) * 10;
+
+      final fade = math.sin(prog * math.pi);
+      final alpha = (fade * 140).round().clamp(0, 255);
+
+      canvas.drawCircle(
+        Offset(x, y),
+        p.size,
+        Paint()..color = p.color.withAlpha(alpha),
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _HeaderBackdropPainter old) => old.t != t;
+}
+
+class _Particle {
+  const _Particle(this.x, this.phase, this.speed, this.size, this.color);
+
+  final double x, phase, size;
+  final int speed;
+  final Color color;
+}
+
+class _StatCell extends StatelessWidget {
+  final IconData icon;
+  final String value, label;
+
+  const _StatCell({
+    required this.icon,
+    required this.value,
+    required this.label,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Text(
-          value,
-          style: const TextStyle(
-            fontSize: 19,
-            fontWeight: FontWeight.w800,
-            color: AppColors.primaryDark,
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: const BoxDecoration(
+              color: AppColors.mint,
+              shape: BoxShape.circle,
+            ),
+            child: Icon(icon, color: AppColors.primaryDark, size: 21),
           ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          label,
-          textAlign: TextAlign.center,
-          style: const TextStyle(fontSize: 11.5, color: AppColors.muted),
-        ),
-      ],
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  value,
+                  style: const TextStyle(
+                    color: AppColors.primaryDeep,
+                    fontSize: 22,
+                    fontWeight: FontWeight.w800,
+                    height: 1.1,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: AppColors.muted, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -428,6 +804,6 @@ class _VDivider extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(width: 1, height: 34, color: AppColors.border);
+    return Container(width: 1, height: 44, color: AppColors.border);
   }
 }
