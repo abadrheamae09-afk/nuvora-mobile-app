@@ -1,11 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:nuvora_app/main.dart';
 import 'package:nuvora_app/features/auth/register_screen.dart';
 import 'package:nuvora_app/features/auth/rider_email_otp_sheet.dart';
 
 void main() {
+  // The app keeps the rider's sign-in token here; start every test signed out.
+  setUp(() => SharedPreferences.setMockInitialValues({}));
+
   testWidgets('Email Verify action is visible beside the label before entry', (
     WidgetTester tester,
   ) async {

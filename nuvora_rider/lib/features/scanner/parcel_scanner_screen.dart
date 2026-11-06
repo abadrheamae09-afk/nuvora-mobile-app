@@ -9,11 +9,20 @@ import '../../theme/app_colors.dart';
 /// parcel page advances the stage. When a code is expected, a different code
 /// keeps the camera open and explains the mismatch.
 class ParcelScannerScreen extends StatefulWidget {
-  const ParcelScannerScreen({super.key, this.expectedCode, this.actionLabel});
+  const ParcelScannerScreen({
+    super.key,
+    this.expectedCode,
+    this.expectedCodes = const [],
+    this.actionLabel,
+  });
 
   /// Tracking number this scan is for, when the rider opened the scanner from a
   /// parcel page.
   final String? expectedCode;
+
+  /// Other codes the same parcel's label may carry, such as the waybill number
+  /// inside the QR code when the parcel row still holds the order number.
+  final List<String> expectedCodes;
 
   /// What the scan will do, shown under the viewfinder.
   final String? actionLabel;
@@ -38,7 +47,7 @@ class _ParcelScannerScreenState extends State<ParcelScannerScreen> {
     if (_found) return;
 
     final expected = widget.expectedCode;
-    if (expected != null && !_matches(code, expected)) {
+    if (expected != null && !_matchesAny(code)) {
       if (!mounted) return;
       setState(() {
         _mismatch = 'This is not $expected. Scan the label of this parcel.';
@@ -52,10 +61,16 @@ class _ParcelScannerScreenState extends State<ParcelScannerScreen> {
     Navigator.pop(context, code);
   }
 
-  bool _matches(String scanned, String expected) {
+  bool _matchesAny(String scanned) {
     final code = scanned.trim().toLowerCase();
-    final wanted = expected.trim().toLowerCase();
-    return code.contains(wanted) || wanted.contains(code);
+
+    return [widget.expectedCode, ...widget.expectedCodes]
+        .whereType<String>()
+        .where((value) => value.trim().isNotEmpty)
+        .any((value) {
+          final wanted = value.trim().toLowerCase();
+          return code.contains(wanted) || wanted.contains(code);
+        });
   }
 
   Future<void> _enterManually() async {

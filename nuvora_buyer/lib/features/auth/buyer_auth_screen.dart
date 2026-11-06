@@ -268,7 +268,7 @@ class _BuyerAuthScreenState extends State<BuyerAuthScreen> {
                   const SizedBox(height: 8),
                   Text(
                     _isRegistering
-                        ? 'Register with Nuvora. Your account requires admin approval.'
+                        ? 'Register with Nuvora. Verify your email to activate your account right away.'
                         : 'Sign in with your Nuvora buyer account.',
                     textAlign: TextAlign.center,
                   ),

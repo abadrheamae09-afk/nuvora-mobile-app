@@ -1,10 +1,11 @@
 import 'package:flutter/foundation.dart';
 
+import '../api/rider_api.dart';
+
 /// Rider-facing stage of one assigned parcel.
 ///
-/// The screens only read this value — they never guess a stage from the clock.
-/// In Vendo the stage came from the server status; here the rider app keeps the
-/// same stage names so the Nuvora API can drive them unchanged later.
+/// The server sends this stage for every parcel, so the screens never guess a
+/// stage from the clock.
 enum RiderStage {
   readyForPickup,
   onTheWayToHub,
@@ -20,6 +21,7 @@ class RiderParcel {
   RiderParcel({
     required this.id,
     required this.tracking,
+    this.labelCode = '',
     required this.assignment,
     required this.seller,
     required this.sellerAddress,
@@ -39,6 +41,11 @@ class RiderParcel {
   final int id;
   final String tracking;
 
+  /// The number printed inside the label's QR code and barcode. It can differ
+  /// from [tracking] when the waybill was printed after the parcel row was
+  /// opened, so the scanner accepts either.
+  final String labelCode;
+
   /// `pickup`, `delivery` or `linehaul`.
   final String assignment;
 
@@ -57,8 +64,6 @@ class RiderParcel {
   RiderStage stage;
   DateTime? deliveredAt;
 
-  /// Stage changes as the rider scans. Kept on the parcel so every screen
-  /// shows the same thing without another round trip.
   bool get isCod => cashToCollect != null;
 
   String get addressLine => address;
@@ -111,150 +116,60 @@ class CodCollection {
   final String status;
 }
 
-/// Everything the rider screens show.
+/// Everything the rider screens show, loaded from the rider's Station Hub.
 ///
-/// The data lives on the device for now: the Nuvora site only exposes rider
-/// login and applications yet, so the assignments, notifications and earnings
-/// below are the sample work the screens were built against. Swap the bodies of
-/// the methods for the API calls when the rider endpoints exist.
+/// Parcels, scans, delivery proofs, earnings and notifications all go through
+/// [RiderApi]; the store only keeps the last server answer so every tab reads
+/// the same thing without another round trip.
 class RiderWorkStore extends ChangeNotifier {
   RiderWorkStore._();
 
   static final RiderWorkStore instance = RiderWorkStore._();
 
-  final List<RiderParcel> _parcels = [
-    RiderParcel(
-      id: 1,
-      tracking: 'NV-10243',
-      assignment: 'pickup',
-      seller: 'Green Mart',
-      sellerAddress: '120 Aurora Blvd, Cubao, Quezon City',
-      buyer: 'Maria Santos',
-      address: 'M. Rodriguez St., Pasig City',
-      items: '2 parcels · 3.4 km',
-      fee: 85,
-      etaLabel: 'ETA 10:40 AM',
-      contact: '+63 917 555 0142',
-      notes: 'Handle with care. Fragile items inside.',
-      stage: RiderStage.readyForPickup,
-    ),
-    RiderParcel(
-      id: 2,
-      tracking: 'NV-10244',
-      assignment: 'pickup',
-      seller: 'Nuvora Home',
-      sellerAddress: '8 Sct. Borromeo, Quezon City',
-      buyer: 'Ana Reyes',
-      address: '15 Camia St., Mandaluyong City',
-      items: '1 parcel · 2.1 km',
-      fee: 70,
-      etaLabel: 'ETA 11:20 AM',
-      contact: '+63 918 224 7781',
-      stage: RiderStage.readyForPickup,
-    ),
-    RiderParcel(
-      id: 3,
-      tracking: 'NV-10251',
-      assignment: 'delivery',
-      seller: 'Nuvora Station Hub · Pasig',
-      sellerAddress: 'Pasig Station Hub, Pasig City',
-      buyer: 'Jose Cruz',
-      address: '22 Narra St., Kapitolyo, Pasig City',
-      items: '1 parcel · 1.6 km',
-      fee: 70,
-      etaLabel: 'Due 3:00 PM',
-      contact: '+63 916 300 1188',
-      notes: 'Leave at the guard house if nobody answers.',
-      cashToCollect: 1250,
-      stage: RiderStage.forDelivery,
-    ),
-    RiderParcel(
-      id: 4,
-      tracking: 'NV-10252',
-      assignment: 'delivery',
-      seller: 'Nuvora Station Hub · Pasig',
-      sellerAddress: 'Pasig Station Hub, Pasig City',
-      buyer: 'Liza Mercado',
-      address: '7 Emerald Ave., Ortigas Center, Pasig City',
-      items: '3 parcels · 2.8 km',
-      fee: 95,
-      etaLabel: 'Due 4:15 PM',
-      contact: '+63 995 118 4402',
-      stage: RiderStage.onTheWayToBuyer,
-    ),
-  ];
+  final List<RiderParcel> _parcels = [];
+  final List<RiderNotice> _notices = [];
+  final List<RiderEarning> _earnings = [];
+  final List<CodCollection> _collections = [];
 
-  final List<RiderNotice> _notices = [
-    RiderNotice(
-      id: 1,
-      title: 'New parcel assigned',
-      message: 'NV-10244 from Nuvora Home was added to your pickups.',
-      timeAgo: '5 minutes ago',
-    ),
-    RiderNotice(
-      id: 2,
-      title: 'Delivery window',
-      message: 'NV-10251 must be delivered before 5:00 PM today.',
-      timeAgo: '42 minutes ago',
-    ),
-    RiderNotice(
-      id: 3,
-      title: 'Cash on hand',
-      message: '₱1,250 COD for NV-10251 must be handed to your Station Hub.',
-      timeAgo: '2 hours ago',
-      read: true,
-    ),
-  ];
+  bool _loadingParcels = false;
+  bool _loadedParcels = false;
+  String? _parcelError;
 
-  final List<RiderEarning> _earnings = [
-    const RiderEarning(
-      order: 'NV-10239',
-      hub: 'Pasig Station Hub',
-      amount: 85,
-      date: 'Nov 1, 2026',
-    ),
-    const RiderEarning(
-      order: 'NV-10231',
-      hub: 'Pasig Station Hub',
-      amount: 70,
-      date: 'Nov 1, 2026',
-    ),
-    const RiderEarning(
-      order: 'NV-10222',
-      hub: 'Cubao Station Hub',
-      amount: 95,
-      date: 'Oct 31, 2026',
-    ),
-  ];
+  bool _loadingEarnings = false;
+  bool _loadedEarnings = false;
+  String? _earningsError;
 
-  final List<CodCollection> _collections = [
-    const CodCollection(
-      order: 'NV-10251',
-      amount: 1250,
-      date: 'Nov 2, 2026',
-      status: 'Still with you',
-    ),
-    const CodCollection(
-      order: 'NV-10238',
-      amount: 890,
-      date: 'Nov 1, 2026',
-      status: 'Received by hub',
-    ),
-  ];
+  double _accruedTotal = 0;
+  double _cashOnHand = 0;
 
   List<RiderParcel> get parcels => List.unmodifiable(_parcels);
   List<RiderNotice> get notices => List.unmodifiable(_notices);
   List<RiderEarning> get earnings => List.unmodifiable(_earnings);
   List<CodCollection> get collections => List.unmodifiable(_collections);
 
+  /// True while the parcel list is being fetched.
+  bool get isLoading => _loadingParcels;
+
+  /// True once the parcel list has been fetched at least once.
+  bool get hasLoaded => _loadedParcels;
+
+  /// Why the last parcel fetch failed, or null when it worked.
+  String? get error => _parcelError;
+
+  /// True while the earnings are being fetched.
+  bool get isEarningsLoading => _loadingEarnings;
+
+  /// True once the earnings have been fetched at least once.
+  bool get hasLoadedEarnings => _loadedEarnings;
+
+  /// Why the last earnings fetch failed, or null when it worked.
+  String? get earningsError => _earningsError;
+
   int get unreadCount => _notices.where((notice) => !notice.read).length;
 
-  double get accruedTotal =>
-      _earnings.fold<double>(0, (sum, row) => sum + row.amount);
+  double get accruedTotal => _accruedTotal;
 
-  double get cashOnHand => _collections
-      .where((row) => row.status == 'Still with you')
-      .fold<double>(0, (sum, row) => sum + row.amount);
+  double get cashOnHand => _cashOnHand;
 
   int get pickupCount => _parcels
       .where((parcel) => parcel.stage == RiderStage.readyForPickup)
@@ -285,105 +200,133 @@ class RiderWorkStore extends ChangeNotifier {
     return null;
   }
 
-  /// Moves the parcel to the stage the scan confirmed, and tells the rider what
-  /// changed for the buyer and the seller.
-  void completeScan(RiderParcel parcel, String scanType) {
-    switch (scanType) {
-      case 'pickup':
-        parcel.stage = RiderStage.onTheWayToHub;
-        _notify(
-          'Parcel picked up',
-          '${parcel.tracking} is on the way to the ${parcel.seller} hub.',
-        );
-      case 'origin_arrival':
-        parcel.stage = RiderStage.forDelivery;
-        _notify(
-          'Parcel at the hub',
-          '${parcel.tracking} was received and is ready for delivery.',
-        );
-      case 'out_for_delivery':
-        parcel.stage = RiderStage.onTheWayToBuyer;
-        _notify(
-          'Out for delivery',
-          '${parcel.buyer} now sees ${parcel.tracking} as on the way.',
-        );
-      case 'delivered':
-        _completeDelivery(parcel);
-      case 'hub_arrival':
-        _notify(
-          'Checkpoint scanned',
-          '${parcel.tracking} reached the next linehaul checkpoint.',
-        );
-      default:
-        break;
-    }
-    notifyListeners();
+  /// Reloads everything the dashboard shows.
+  Future<void> refresh() async {
+    await Future.wait([refreshParcels(), refreshEarnings()]);
+    await refreshNotifications();
   }
 
-  void _completeDelivery(RiderParcel parcel) {
-    parcel.stage = RiderStage.delivered;
-    parcel.deliveredAt = DateTime.now();
-    _parcels.remove(parcel);
+  /// The Parcels tab's own fetch: assigned pickups, deliveries and transfers.
+  Future<void> refreshParcels() async {
+    if (_loadingParcels) return;
 
-    final date = _dateLabel(parcel.deliveredAt!);
-    _earnings.insert(
-      0,
-      RiderEarning(
-        order: parcel.tracking,
-        hub: parcel.seller,
-        amount: parcel.fee,
-        date: date,
-      ),
-    );
+    _loadingParcels = true;
+    _parcelError = null;
+    notifyListeners();
 
-    if (parcel.cashToCollect != null) {
-      // One COD row per order, so the cash on hand never doubles up when the
-      // same parcel is delivered again after a reschedule.
-      _collections.removeWhere((row) => row.order == parcel.tracking);
-      _collections.insert(
-        0,
-        CodCollection(
-          order: parcel.tracking,
-          amount: parcel.cashToCollect!,
-          date: date,
-          status: 'Still with you',
-        ),
+    try {
+      final data = await RiderApi.instance.parcels();
+      _applyAssignments(data);
+      _loadedParcels = true;
+    } on RiderApiException catch (error) {
+      _parcelError = error.message;
+    } catch (_) {
+      _parcelError =
+          'Could not reach your Station Hub. Check your connection and retry.';
+    } finally {
+      _loadingParcels = false;
+      notifyListeners();
+    }
+  }
+
+  /// The Earnings tab's own fetch: credits and the COD cash still held.
+  Future<void> refreshEarnings() async {
+    if (_loadingEarnings) return;
+
+    _loadingEarnings = true;
+    _earningsError = null;
+    notifyListeners();
+
+    try {
+      final data = await RiderApi.instance.earnings();
+      _applyEarnings(data);
+      _loadedEarnings = true;
+    } on RiderApiException catch (error) {
+      _earningsError = error.message;
+    } catch (_) {
+      _earningsError =
+          'Could not reach your Station Hub. Check your connection and retry.';
+    } finally {
+      _loadingEarnings = false;
+      notifyListeners();
+    }
+  }
+
+  /// Alerts are secondary: a hiccup there must not blank out the parcel list.
+  Future<void> refreshNotifications() async {
+    try {
+      _applyNotifications(await RiderApi.instance.notifications());
+      notifyListeners();
+    } catch (_) {
+      // The next refresh retries them.
+    }
+  }
+
+  /// Moves the parcel to the stage the scan confirmed.
+  ///
+  /// A delivery scan is completed with the handover photo and, for COD
+  /// parcels, the exact cash the rider collected.
+  Future<void> completeScan(
+    RiderParcel parcel,
+    String scanType, {
+    String? recipientName,
+    String? photoPath,
+    double? cashCollected,
+  }) async {
+    if (scanType == 'delivered') {
+      if (recipientName == null ||
+          recipientName.trim().isEmpty ||
+          photoPath == null ||
+          photoPath.isEmpty) {
+        throw const RiderApiException(
+          'Add the proof of delivery before scanning this parcel.',
+        );
+      }
+
+      await RiderApi.instance.submitProof(
+        deliveryId: parcel.id,
+        recipientName: recipientName,
+        photoPath: photoPath,
+        cashCollected: cashCollected,
+      );
+    } else {
+      await RiderApi.instance.scan(
+        trackingNumber: parcel.tracking,
+        scanType: scanType,
+        scanKey:
+            '${parcel.assignment}:${parcel.id}:$scanType:'
+            '${DateTime.now().millisecondsSinceEpoch}',
       );
     }
 
-    _notify(
-      'Parcel delivered',
-      '${parcel.tracking} was handed to ${parcel.buyer}. The buyer, '
-          'the seller and your Station Hub now see it as delivered.',
-    );
+    await refresh();
   }
 
-  void markFailed(RiderParcel parcel, String reason) {
-    parcel.stage = RiderStage.deliveryFailed;
-    _notify(
-      'Delivery failed',
-      '${parcel.tracking} could not be delivered. Reason: $reason',
-    );
-    notifyListeners();
+  /// Reports a failed delivery. The Station Hub sees it as a parcel exception.
+  Future<void> markFailed(RiderParcel parcel, String reason) async {
+    await RiderApi.instance.reportFailure(parcel.id, reason);
+    await refresh();
   }
 
-  void reschedule(RiderParcel parcel) {
-    parcel.stage = RiderStage.forDelivery;
-    _notify(
-      'Delivery rescheduled',
-      '${parcel.tracking} is booked for tomorrow\'s delivery run. '
-          'The buyer and seller were told the new date.',
-    );
-    notifyListeners();
+  /// Books the next delivery attempt after a failed one.
+  Future<void> reschedule(RiderParcel parcel) async {
+    await RiderApi.instance.rescheduleDelivery(parcel.id);
+    await refresh();
   }
 
-  void markNoticeRead(RiderNotice notice) {
+  Future<void> markNoticeRead(RiderNotice notice) async {
     if (notice.read) return;
     notice.read = true;
     notifyListeners();
+
+    try {
+      await RiderApi.instance.markNotificationRead(notice.id);
+    } catch (_) {
+      // The next refresh restores the server's read state.
+    }
   }
 
-  void markAllNoticesRead() {
+  Future<void> markAllNoticesRead() async {
     var changed = false;
     for (final notice in _notices) {
       if (!notice.read) {
@@ -392,37 +335,129 @@ class RiderWorkStore extends ChangeNotifier {
       }
     }
     if (changed) notifyListeners();
+
+    try {
+      await RiderApi.instance.markAllNotificationsRead();
+    } catch (_) {
+      // The next refresh restores the server's read state.
+    }
   }
 
-  void _notify(String title, String message) {
-    _notices.insert(
-      0,
-      RiderNotice(
-        id: (_notices.isEmpty ? 0 : _notices.first.id) + 1,
-        title: title,
-        message: message,
-        timeAgo: 'Just now',
-      ),
+  /// Clears everything when the rider signs out.
+  void reset() {
+    _parcels.clear();
+    _notices.clear();
+    _earnings.clear();
+    _collections.clear();
+
+    _accruedTotal = 0;
+    _cashOnHand = 0;
+    _parcelError = null;
+    _earningsError = null;
+    _loadedParcels = false;
+    _loadedEarnings = false;
+    _loadingParcels = false;
+    _loadingEarnings = false;
+    notifyListeners();
+  }
+
+  void _applyAssignments(Map<String, dynamic> data) {
+    final rows = (data['assignments'] as List<dynamic>? ?? [])
+        .whereType<Map>()
+        .map((row) => Map<String, dynamic>.from(row));
+
+    _parcels
+      ..clear()
+      ..addAll(rows.map(_parcelFrom));
+  }
+
+  void _applyEarnings(Map<String, dynamic> data) {
+    final summary = data['summary'] is Map
+        ? Map<String, dynamic>.from(data['summary'] as Map)
+        : <String, dynamic>{};
+
+    _accruedTotal = _money(summary['accrued_total']);
+    _cashOnHand = _money(summary['cash_on_hand']);
+
+    _earnings
+      ..clear()
+      ..addAll(
+        (data['earnings'] as List<dynamic>? ?? []).whereType<Map>().map(
+          (row) => RiderEarning(
+            order: row['order']?.toString() ?? '',
+            hub: row['hub']?.toString() ?? '',
+            amount: _money(row['amount']),
+            date: row['date']?.toString() ?? '',
+          ),
+        ),
+      );
+
+    _collections
+      ..clear()
+      ..addAll(
+        (data['collections'] as List<dynamic>? ?? []).whereType<Map>().map(
+          (row) => CodCollection(
+            order: row['order']?.toString() ?? '',
+            amount: _money(row['amount']),
+            date: row['date']?.toString() ?? '',
+            status: row['status']?.toString() ?? 'Still with you',
+          ),
+        ),
+      );
+  }
+
+  void _applyNotifications(Map<String, dynamic> data) {
+    _notices
+      ..clear()
+      ..addAll(
+        (data['notifications'] as List<dynamic>? ?? []).whereType<Map>().map(
+          (row) => RiderNotice(
+            id: int.tryParse('${row['id'] ?? ''}') ?? 0,
+            title: row['title']?.toString() ?? 'Parcel update',
+            message: row['message']?.toString() ?? '',
+            timeAgo: row['time_ago']?.toString() ?? 'Just now',
+            read: row['read'] == true,
+          ),
+        ),
+      );
+  }
+
+  static RiderParcel _parcelFrom(Map<String, dynamic> row) {
+    final cash = row['cash_to_collect'];
+
+    return RiderParcel(
+      id: int.tryParse('${row['id'] ?? ''}') ?? 0,
+      tracking: row['tracking']?.toString() ?? '',
+      labelCode: row['label_code']?.toString() ?? '',
+      assignment: row['assignment']?.toString() ?? 'delivery',
+      seller: row['seller']?.toString() ?? '',
+      sellerAddress: row['seller_address']?.toString() ?? '',
+      buyer: row['buyer']?.toString() ?? '',
+      address: row['address']?.toString() ?? '',
+      items: row['items']?.toString() ?? '',
+      fee: _money(row['fee']),
+      etaLabel: row['eta_label']?.toString() ?? '',
+      contact: row['contact']?.toString() ?? '',
+      notes: row['notes']?.toString() ?? '',
+      cashToCollect: cash == null ? null : _money(cash),
+      cutoffLabel: row['cutoff_label']?.toString() ?? '5:00 PM',
+      stage: _stageFrom(row['stage']?.toString()),
+      deliveredAt: DateTime.tryParse(row['delivered_at']?.toString() ?? ''),
     );
   }
 
-  static String _dateLabel(DateTime date) {
-    const months = [
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec',
-    ];
-    return '${months[date.month - 1]} ${date.day}, ${date.year}';
-  }
+  static RiderStage _stageFrom(String? value) => switch (value) {
+    'ready_for_pickup' => RiderStage.readyForPickup,
+    'on_the_way_to_hub' => RiderStage.onTheWayToHub,
+    'for_delivery' => RiderStage.forDelivery,
+    'on_the_way_to_buyer' => RiderStage.onTheWayToBuyer,
+    'linehaul' => RiderStage.linehaul,
+    'delivery_failed' => RiderStage.deliveryFailed,
+    _ => RiderStage.delivered,
+  };
+
+  static double _money(dynamic value) =>
+      double.tryParse(value?.toString() ?? '') ?? 0;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

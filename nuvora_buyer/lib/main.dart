@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'features/auth/buyer_auth_screen.dart';
+import 'dashboard/mockup_screens/splash_screen.dart'; // adjust to where splash_screen.dart lives
 
 void main() {
   runApp(const NuvoraBuyerApp());
@@ -13,15 +13,12 @@ class NuvoraBuyerApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Nuvora Buyer',
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xff542261)),
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF143628)),
         useMaterial3: true,
-        inputDecorationTheme: const InputDecorationTheme(
-          filled: true,
-          fillColor: Color(0xfff8f5f8),
-        ),
       ),
-      home: const BuyerAuthScreen(),
+      home: const MockupSplashScreen(), // splash first, then it goes to login
     );
   }
 }

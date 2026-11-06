@@ -72,6 +72,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     ),
   ];
 
+  @override
+  void initState() {
+    super.initState();
+    // The first paint shows nothing until the Station Hub answers, so ask for
+    // the rider's assigned work as soon as the dashboard opens.
+    _store.refresh();
+  }
+
   void _onTabSelected(int index) {
     if (index == _selectedTab) return;
     HapticFeedback.selectionClick();

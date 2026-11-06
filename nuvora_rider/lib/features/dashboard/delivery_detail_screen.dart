@@ -5,12 +5,46 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../core/api/rider_api.dart';
 import '../../core/data/rider_work.dart';
-import '../../theme/app_colors.dart';
 import '../scanner/parcel_scanner_screen.dart';
 import 'route_map_screen.dart';
 
 const double _radius = 16;
+
+/// Colours taken from the redesign (stitch_mobile_app_redesign).
+class _Palette {
+  static const forest = Color(0xFF143224);
+  static const forestEnd = Color(0xFF0B2619);
+  static const forestDeep = Color(0xFF001D10);
+  static const secondary = Color(0xFF006C49);
+  static const mint = Color(0xFF6FFBBE);
+  static const mintInk = Color(0xFF005236);
+  static const background = Color(0xFFF3FCF5);
+  static const surfaceLow = Color(0xFFEDF6EF);
+  static const surface = Color(0xFFE7F0E9);
+  static const border = Color(0xFFDCE5DE);
+  static const ink = Color(0xFF151D19);
+  static const inkVariant = Color(0xFF424844);
+  static const outline = Color(0xFF727973);
+  static const onForestMuted = Color(0xFF9DB9A9);
+  static const blue = Color(0xFF2563EB);
+  static const blueSoft = Color(0xFFE3EDFF);
+  static const warnBg = Color(0xFFFFF6E0);
+  static const warnBorder = Color(0xFFF3E1B0);
+  static const warnInk = Color(0xFF8A5A00);
+  static const error = Color(0xFFBA1A1A);
+  static const errorContainer = Color(0xFFFFDAD6);
+}
+
+BoxDecoration _cardDecoration() => BoxDecoration(
+  color: Colors.white,
+  borderRadius: BorderRadius.circular(_radius),
+  border: Border.all(color: _Palette.border),
+  boxShadow: const [
+    BoxShadow(color: Color(0x0A143224), blurRadius: 16, offset: Offset(0, 4)),
+  ],
+);
 
 /// One parcel, start to finish: what it is, where it goes, the proof the buyer
 /// needs, and the scan that moves it to the next stage.
@@ -53,6 +87,10 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
       _parcel.stage != RiderStage.deliveryFailed;
 
   String _money(double value) => '₱${value.toStringAsFixed(2)}';
+
+  // ---------------------------------------------------------------------------
+  // Logic & routing: unchanged from the original screen.
+  // ---------------------------------------------------------------------------
 
   // ── Contact and navigation ────────────────────────────────────────────────
   Future<void> _callBuyer() async {
@@ -166,6 +204,9 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
       MaterialPageRoute(
         builder: (_) => ParcelScannerScreen(
           expectedCode: _parcel.tracking,
+          // The printed label can carry the waybill number while the parcel
+          // row still holds the order number; both identify this parcel.
+          expectedCodes: [_parcel.labelCode],
           actionLabel: riderScanLabelFor(type),
         ),
       ),
@@ -173,27 +214,54 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
     if (!mounted || scanned == null) return;
 
     setState(() => _busy = true);
-    await Future<void>.delayed(const Duration(milliseconds: 400));
-    if (!mounted) return;
-
-    RiderWorkStore.instance.completeScan(_parcel, type);
-    setState(() {
-      _busy = false;
-      _photo = null;
-      _recipient.clear();
-      _cash.clear();
-    });
-
-    if (type == 'delivered') {
-      _snack(
-        'Delivered. The buyer, the seller and your Station Hub now show this '
-        'parcel as delivered.',
+    try {
+      await RiderWorkStore.instance.completeScan(
+        _parcel,
+        type,
+        recipientName: _recipient.text,
+        photoPath: _photo?.path,
+        cashCollected: _parcel.cashToCollect == null
+            ? null
+            : double.tryParse(_cash.text.trim()),
       );
-      Navigator.pop(context);
-      return;
-    }
+      if (!mounted) return;
 
-    _snack('Scan saved. Seller and buyer tracking is updated.');
+      setState(() {
+        _photo = null;
+        _recipient.clear();
+        _cash.clear();
+      });
+
+      if (type == 'delivered') {
+        _snack(
+          'Delivered. The buyer, the seller and your Station Hub now show this '
+          'parcel as delivered.',
+        );
+        Navigator.pop(context);
+        return;
+      }
+
+      final updated = RiderWorkStore.instance.find(_parcel.tracking);
+
+      if (updated == null) {
+        // The parcel is now at the hub (or with the next hub) and no longer
+        // this rider's task, so there is nothing left on this page.
+        _snack('Scan saved. The parcel is no longer assigned to you.');
+        Navigator.pop(context);
+        return;
+      }
+
+      setState(() => _parcel = updated);
+      _snack('Scan saved. Seller and buyer tracking is updated.');
+    } on RiderApiException catch (error) {
+      if (mounted) _snack(error.message);
+    } catch (_) {
+      if (mounted) {
+        _snack('Could not save the scan. Check your connection and retry.');
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   Future<void> _reschedule() async {
@@ -202,12 +270,12 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
       builder: (dialogContext) => AlertDialog(
         backgroundColor: Colors.white,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(_radius + 4),
+          borderRadius: BorderRadius.circular(_radius + 8),
         ),
         title: const Text(
           'Reschedule delivery?',
           style: TextStyle(
-            color: AppColors.ink,
+            color: _Palette.forestDeep,
             fontSize: 18,
             fontWeight: FontWeight.w800,
           ),
@@ -215,24 +283,40 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
         content: const Text(
           'This parcel will be booked for tomorrow\'s delivery run. The buyer '
           'and seller will be told the new date.',
-          style: TextStyle(color: AppColors.muted, fontSize: 14),
+          style: TextStyle(color: _Palette.inkVariant, fontSize: 14),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, false),
+            style: TextButton.styleFrom(foregroundColor: _Palette.outline),
             child: const Text('Cancel'),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(dialogContext, true),
+            style: FilledButton.styleFrom(
+              backgroundColor: _Palette.secondary,
+              foregroundColor: Colors.white,
+            ),
             child: const Text('Reschedule'),
           ),
         ],
       ),
     );
     if (confirmed != true || !mounted) return;
-    RiderWorkStore.instance.reschedule(_parcel);
-    setState(() {});
-    _snack('Delivery rescheduled for tomorrow.');
+
+    try {
+      await RiderWorkStore.instance.reschedule(_parcel);
+      final updated = RiderWorkStore.instance.find(_parcel.tracking);
+      if (!mounted) return;
+      if (updated != null) setState(() => _parcel = updated);
+      _snack('Delivery rescheduled for tomorrow.');
+    } on RiderApiException catch (error) {
+      if (mounted) _snack(error.message);
+    } catch (_) {
+      if (mounted) {
+        _snack('Could not reschedule. Check your connection and retry.');
+      }
+    }
   }
 
   Future<void> _reportIssue() async {
@@ -242,10 +326,25 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
       builder: (_) => const _IssueSheet(),
     );
     if (reason == null || !mounted) return;
-    RiderWorkStore.instance.markFailed(_parcel, reason);
-    setState(() {});
-    _snack('Issue sent to Logistics. The parcel is marked as failed.');
+
+    try {
+      await RiderWorkStore.instance.markFailed(_parcel, reason);
+      final updated = RiderWorkStore.instance.find(_parcel.tracking);
+      if (!mounted) return;
+      if (updated != null) setState(() => _parcel = updated);
+      _snack('Issue sent to your Station Hub. The parcel is marked as failed.');
+    } on RiderApiException catch (error) {
+      if (mounted) _snack(error.message);
+    } catch (_) {
+      if (mounted) {
+        _snack('Could not report the issue. Check your connection and retry.');
+      }
+    }
   }
+
+  // ---------------------------------------------------------------------------
+  // Design
+  // ---------------------------------------------------------------------------
 
   // ── Screen ────────────────────────────────────────────────────────────────
   @override
@@ -257,52 +356,69 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle.light,
       child: Scaffold(
-        backgroundColor: AppColors.background,
+        backgroundColor: _Palette.background,
         body: SingleChildScrollView(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _buildHeader(stage),
               Padding(
-                padding: const EdgeInsets.fromLTRB(20, 20, 20, 28),
+                padding: const EdgeInsets.fromLTRB(16, 20, 16, 28),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     if (_parcel.isCod) ...[
                       _buildCashCard(),
-                      const SizedBox(height: 20),
+                      const SizedBox(height: 16),
                     ],
                     if (!failed) ...[
                       _buildDeliveryWindowCard(),
-                      const SizedBox(height: 20),
+                      const SizedBox(height: 16),
                     ],
                     _buildRouteSection(),
-                    const SizedBox(height: 24),
+                    const SizedBox(height: 22),
                     _buildStopSection(),
-                    const SizedBox(height: 24),
+                    const SizedBox(height: 22),
                     _buildMapSection(),
-                    const SizedBox(height: 24),
+                    const SizedBox(height: 22),
                     if (_needsProof) ...[
                       _buildProofSection(),
-                      const SizedBox(height: 24),
+                      const SizedBox(height: 22),
                     ],
                     _buildStageSteps(stage),
                     if (failed) ...[
                       const SizedBox(height: 20),
                       FilledButton.icon(
                         onPressed: _reschedule,
+                        style: FilledButton.styleFrom(
+                          backgroundColor: _Palette.secondary,
+                          foregroundColor: Colors.white,
+                          minimumSize: const Size(double.infinity, 52),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(18),
+                          ),
+                          textStyle: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
                         icon: const Icon(Icons.event_repeat_rounded, size: 20),
                         label: const Text('Reschedule for tomorrow'),
                       ),
                     ],
-                    if (!failed) ...[
+                    // A failed delivery is reported against the delivery the
+                    // Station Hub queued; pickups have no delivery row yet.
+                    if (!failed && _parcel.assignment == 'delivery') ...[
                       const SizedBox(height: 8),
                       Align(
                         alignment: Alignment.centerLeft,
                         child: TextButton.icon(
                           onPressed: _busy ? null : _reportIssue,
                           style: TextButton.styleFrom(
-                            foregroundColor: AppColors.danger,
+                            foregroundColor: _Palette.error,
+                            textStyle: const TextStyle(
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
                           icon: const Icon(Icons.report_problem_outlined),
                           label: const Text('Report an issue'),
@@ -322,101 +438,156 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
     );
   }
 
-  // ── Green header ──────────────────────────────────────────────────────────
+  // ── Deep forest header ────────────────────────────────────────────────────
   Widget _buildHeader(RiderStage stage) {
     final topInset = MediaQuery.of(context).padding.top;
     final style = _stageStyle(stage);
 
+    const radius = BorderRadius.only(
+      bottomLeft: Radius.circular(36),
+      bottomRight: Radius.circular(36),
+    );
+
     return Container(
       width: double.infinity,
-      padding: EdgeInsets.fromLTRB(12, topInset + 8, 20, 22),
+      clipBehavior: Clip.antiAlias,
       decoration: const BoxDecoration(
+        borderRadius: radius,
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [AppColors.headerBottom, AppColors.headerTop],
+          colors: [_Palette.forest, _Palette.forestEnd],
         ),
-        borderRadius: BorderRadius.only(
-          bottomLeft: Radius.circular(28),
-          bottomRight: Radius.circular(28),
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              IconButton(
-                tooltip: 'Back',
-                onPressed: () => Navigator.pop(context),
-                icon: const Icon(Icons.arrow_back_rounded, color: Colors.white),
-              ),
-              const Spacer(),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 6,
-                ),
-                decoration: BoxDecoration(
-                  color: style.bg,
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text(
-                  riderStageBadge(stage),
-                  style: TextStyle(
-                    color: style.fg,
-                    fontSize: 11.5,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ),
-            ],
+        boxShadow: [
+          BoxShadow(
+            color: Color(0x2E001D10),
+            blurRadius: 24,
+            offset: Offset(0, 10),
           ),
-          const SizedBox(height: 4),
+        ],
+      ),
+      child: Stack(
+        children: [
+          // Concentric rings for optical depth.
+          const Positioned(
+            right: -64,
+            top: -64,
+            child: _Ring(size: 224, alpha: 13),
+          ),
+          const Positioned(
+            right: -24,
+            top: -24,
+            child: _Ring(size: 144, alpha: 26),
+          ),
+          const Positioned(
+            left: 90,
+            bottom: -110,
+            child: _Glow(size: 250, color: Color(0x146FFBBE)),
+          ),
           Padding(
-            padding: const EdgeInsets.only(left: 8),
+            padding: EdgeInsets.fromLTRB(16, topInset + 10, 20, 24),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  _parcel.tracking,
-                  style: const TextStyle(
-                    color: Color(0xB3FFFFFF),
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  riderStageTitle(_parcel),
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 22,
-                    fontWeight: FontWeight.w800,
-                    height: 1.2,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  riderStageSubtitle(_parcel),
-                  style: const TextStyle(
-                    color: Color(0xD9FFFFFF),
-                    fontSize: 13,
-                  ),
-                ),
-                const SizedBox(height: 16),
                 Row(
                   children: [
-                    _HeaderChip(
-                      icon: Icons.schedule_rounded,
-                      label: _parcel.etaLabel,
+                    Semantics(
+                      button: true,
+                      label: 'Back',
+                      child: Tooltip(
+                        message: 'Back',
+                        child: Material(
+                          color: Colors.white.withAlpha(26),
+                          shape: const CircleBorder(),
+                          clipBehavior: Clip.antiAlias,
+                          child: InkWell(
+                            onTap: () => Navigator.pop(context),
+                            child: const SizedBox(
+                              width: 40,
+                              height: 40,
+                              child: Icon(
+                                Icons.arrow_back_rounded,
+                                color: Colors.white,
+                                size: 20,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
                     ),
-                    const SizedBox(width: 8),
-                    _HeaderChip(
-                      icon: Icons.inventory_2_outlined,
-                      label: _parcel.items,
+                    const Spacer(),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: style.bg,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        riderStageBadge(stage),
+                        style: TextStyle(
+                          color: style.fg,
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
                     ),
                   ],
+                ),
+                const SizedBox(height: 16),
+                Padding(
+                  padding: const EdgeInsets.only(left: 4),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _parcel.tracking,
+                        style: const TextStyle(
+                          color: _Palette.onForestMuted,
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 1.1,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        riderStageTitle(_parcel),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 24,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: -0.4,
+                          height: 1.2,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        riderStageSubtitle(_parcel),
+                        style: const TextStyle(
+                          color: Color(0xFFADCEBA),
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          _HeaderChip(
+                            icon: Icons.schedule_rounded,
+                            label: _parcel.etaLabel,
+                          ),
+                          _HeaderChip(
+                            icon: Icons.inventory_2_outlined,
+                            label: _parcel.items,
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -426,26 +597,84 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
     );
   }
 
+  /// The scan action, docked at the bottom under the thumb.
   Widget _buildBottomBar(String scanType) {
-    return SafeArea(
-      top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 10, 20, 12),
-        child: SizedBox(
-          height: 54,
-          child: FilledButton.icon(
-            onPressed: _busy ? null : _scan,
-            icon: _busy
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.white,
+    const radius = BorderRadius.all(Radius.circular(18));
+
+    return Container(
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        border: Border(top: BorderSide(color: _Palette.surface)),
+        boxShadow: [
+          BoxShadow(
+            color: Color(0x0F143224),
+            blurRadius: 20,
+            offset: Offset(0, -2),
+          ),
+        ],
+      ),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+          child: Opacity(
+            opacity: _busy ? 0.85 : 1,
+            child: Container(
+              height: 56,
+              decoration: const BoxDecoration(
+                borderRadius: radius,
+                gradient: LinearGradient(
+                  begin: Alignment.centerLeft,
+                  end: Alignment.centerRight,
+                  colors: [_Palette.secondary, _Palette.forest],
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Color(0x40006C49),
+                    blurRadius: 20,
+                    offset: Offset(0, 8),
+                  ),
+                ],
+              ),
+              child: Material(
+                color: Colors.transparent,
+                borderRadius: radius,
+                clipBehavior: Clip.antiAlias,
+                child: InkWell(
+                  onTap: _busy ? null : _scan,
+                  child: Center(
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _busy
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : const Icon(
+                                Icons.qr_code_scanner_rounded,
+                                color: _Palette.mint,
+                                size: 24,
+                              ),
+                        const SizedBox(width: 10),
+                        Text(
+                          _busy ? 'Saving…' : riderScanLabelFor(scanType),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
                     ),
-                  )
-                : const Icon(Icons.qr_code_scanner_rounded),
-            label: Text(_busy ? 'Saving…' : riderScanLabelFor(scanType)),
+                  ),
+                ),
+              ),
+            ),
           ),
         ),
       ),
@@ -459,24 +688,21 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
       width: double.infinity,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: AppColors.goldSoft,
+        color: _Palette.warnBg,
         borderRadius: BorderRadius.circular(_radius),
-        border: Border.all(color: const Color(0xFFE6EFC0)),
+        border: Border.all(color: _Palette.warnBorder),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Container(
-            width: 40,
-            height: 40,
+            width: 44,
+            height: 44,
             decoration: BoxDecoration(
               color: Colors.white,
               borderRadius: BorderRadius.circular(12),
             ),
-            child: const Icon(
-              Icons.payments_outlined,
-              color: AppColors.goldInk,
-            ),
+            child: const Icon(Icons.payments_outlined, color: _Palette.warnInk),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -486,7 +712,7 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
                 Text(
                   'Collect $amount cash',
                   style: const TextStyle(
-                    color: AppColors.primaryDeep,
+                    color: _Palette.forestDeep,
                     fontSize: 15,
                     fontWeight: FontWeight.w800,
                   ),
@@ -498,7 +724,7 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
                   style: TextStyle(
                     color: Color(0xFF4B5A50),
                     fontSize: 12.5,
-                    height: 1.35,
+                    height: 1.4,
                   ),
                 ),
               ],
@@ -513,24 +739,18 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(_radius),
-        border: Border.all(color: AppColors.border),
-      ),
+      decoration: _cardDecoration(),
       child: Row(
         children: [
           Container(
-            width: 42,
-            height: 42,
+            width: 44,
+            height: 44,
             decoration: BoxDecoration(
-              color: AppColors.mint,
+              color: _Palette.surfaceLow,
               borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: _Palette.secondary.withAlpha(26)),
             ),
-            child: const Icon(
-              Icons.timer_outlined,
-              color: AppColors.primaryDark,
-            ),
+            child: const Icon(Icons.timer_outlined, color: _Palette.secondary),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -540,17 +760,29 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
                 const Text(
                   'Delivery window',
                   style: TextStyle(
-                    color: AppColors.ink,
+                    color: _Palette.ink,
                     fontSize: 14.5,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
                 const SizedBox(height: 2),
-                Text(
-                  'Deliver before ${_parcel.cutoffLabel} today',
-                  style: const TextStyle(
-                    color: AppColors.muted,
-                    fontSize: 12.5,
+                Text.rich(
+                  TextSpan(
+                    style: const TextStyle(
+                      color: _Palette.inkVariant,
+                      fontSize: 12.5,
+                    ),
+                    children: [
+                      const TextSpan(text: 'Deliver before '),
+                      TextSpan(
+                        text: _parcel.cutoffLabel,
+                        style: const TextStyle(
+                          color: _Palette.secondary,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const TextSpan(text: ' today'),
+                    ],
                   ),
                 ),
               ],
@@ -567,20 +799,16 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SectionTitle('Route'),
-        const SizedBox(height: 12),
+        const SizedBox(height: 10),
         Container(
           width: double.infinity,
           padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(_radius),
-            border: Border.all(color: AppColors.border),
-          ),
+          decoration: _cardDecoration(),
           child: Column(
             children: [
               _RouteStop(
                 icon: Icons.store_mall_directory_outlined,
-                color: AppColors.primary,
+                color: _Palette.secondary,
                 label: 'Pickup',
                 name: _parcel.seller,
                 address: _parcel.sellerAddress,
@@ -589,7 +817,7 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
               const SizedBox(height: 8),
               _RouteStop(
                 icon: Icons.flag_outlined,
-                color: AppColors.blue,
+                color: _Palette.blue,
                 label: 'Drop-off',
                 name: _parcel.buyer,
                 address: _parcel.address,
@@ -602,14 +830,23 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
                     child: OutlinedButton.icon(
                       onPressed: _openRoute,
                       style: OutlinedButton.styleFrom(
-                        foregroundColor: AppColors.ink,
-                        side: const BorderSide(color: AppColors.border),
+                        foregroundColor: _Palette.ink,
+                        backgroundColor: _Palette.surfaceLow,
+                        side: const BorderSide(color: _Palette.border),
                         minimumSize: const Size(0, 46),
                         shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(14),
+                          borderRadius: BorderRadius.circular(23),
+                        ),
+                        textStyle: const TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w700,
                         ),
                       ),
-                      icon: const Icon(Icons.map_outlined, size: 18),
+                      icon: const Icon(
+                        Icons.map_outlined,
+                        size: 18,
+                        color: _Palette.secondary,
+                      ),
                       label: const Text('View route'),
                     ),
                   ),
@@ -618,7 +855,16 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
                     child: FilledButton.icon(
                       onPressed: _openMap,
                       style: FilledButton.styleFrom(
+                        backgroundColor: _Palette.secondary,
+                        foregroundColor: Colors.white,
                         minimumSize: const Size(0, 46),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(23),
+                        ),
+                        textStyle: const TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w700,
+                        ),
                       ),
                       icon: const Icon(Icons.navigation_outlined, size: 18),
                       label: const Text('Navigate'),
@@ -638,15 +884,11 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SectionTitle('Recipient'),
-        const SizedBox(height: 12),
+        const SizedBox(height: 10),
         Container(
           width: double.infinity,
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(_radius),
-            border: Border.all(color: AppColors.border),
-          ),
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+          decoration: _cardDecoration(),
           child: Column(
             children: [
               _DetailRow(
@@ -654,7 +896,7 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
                 label: 'Name',
                 value: _parcel.buyer,
               ),
-              const Divider(height: 1, color: AppColors.border),
+              const Divider(height: 1, color: _Palette.surface),
               _DetailRow(
                 icon: Icons.call_outlined,
                 label: 'Contact',
@@ -662,7 +904,7 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
                 actionLabel: 'Call',
                 onAction: _callBuyer,
               ),
-              const Divider(height: 1, color: AppColors.border),
+              const Divider(height: 1, color: _Palette.surface),
               _DetailRow(
                 icon: Icons.location_on_outlined,
                 label: 'Address',
@@ -671,7 +913,7 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
                 onAction: _openMap,
               ),
               if (_parcel.notes.isNotEmpty) ...[
-                const Divider(height: 1, color: AppColors.border),
+                const Divider(height: 1, color: _Palette.surface),
                 _DetailRow(
                   icon: Icons.sticky_note_2_outlined,
                   label: 'Note',
@@ -692,19 +934,30 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
         width: double.infinity,
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: AppColors.primaryDeep,
+          gradient: const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [_Palette.forestDeep, _Palette.forest],
+          ),
           borderRadius: BorderRadius.circular(_radius),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x26001D10),
+              blurRadius: 16,
+              offset: Offset(0, 6),
+            ),
+          ],
         ),
         child: Row(
           children: [
             Container(
-              width: 44,
-              height: 44,
+              width: 46,
+              height: 46,
               decoration: BoxDecoration(
                 color: Colors.white.withAlpha(26),
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: const Icon(Icons.route_outlined, color: AppColors.gold),
+              child: const Icon(Icons.route_outlined, color: _Palette.mint),
             ),
             const SizedBox(width: 12),
             const Expanded(
@@ -722,15 +975,60 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
                   SizedBox(height: 2),
                   Text(
                     'Stops, distance and estimated time',
-                    style: TextStyle(color: Color(0xB3FFFFFF), fontSize: 12.5),
+                    style: TextStyle(
+                      color: _Palette.onForestMuted,
+                      fontSize: 12.5,
+                    ),
                   ),
                 ],
               ),
             ),
-            const Icon(Icons.chevron_right_rounded, color: Colors.white),
+            Container(
+              width: 34,
+              height: 34,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.white.withAlpha(26),
+              ),
+              child: const Icon(
+                Icons.arrow_forward_rounded,
+                color: Colors.white,
+                size: 18,
+              ),
+            ),
           ],
         ),
       ),
+    );
+  }
+
+  InputDecoration _fieldDecoration({
+    required String label,
+    required String hint,
+    required IconData icon,
+  }) {
+    OutlineInputBorder border(Color color, [double width = 1]) =>
+        OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide(color: color, width: width),
+        );
+
+    return InputDecoration(
+      labelText: label,
+      hintText: hint,
+      labelStyle: const TextStyle(color: _Palette.outline, fontSize: 14),
+      hintStyle: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13.5),
+      floatingLabelStyle: const TextStyle(
+        color: _Palette.secondary,
+        fontWeight: FontWeight.w700,
+      ),
+      prefixIcon: Icon(icon, size: 20, color: _Palette.outline),
+      filled: true,
+      fillColor: Colors.white,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+      border: border(_Palette.border),
+      enabledBorder: border(_Palette.border),
+      focusedBorder: border(_Palette.secondary, 1.5),
     );
   }
 
@@ -739,20 +1037,16 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
       key: _proofFormKey,
       width: double.infinity,
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(_radius),
-        border: Border.all(color: AppColors.border),
-      ),
+      decoration: _cardDecoration(),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const _SectionTitle('Proof of delivery'),
-          const SizedBox(height: 4),
+          const SizedBox(height: 6),
           const Text(
             'Fill this in before scanning the parcel at the buyer\'s door.',
             style: TextStyle(
-              color: AppColors.muted,
+              color: _Palette.outline,
               fontSize: 12.5,
               height: 1.4,
             ),
@@ -761,14 +1055,15 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
           TextField(
             controller: _recipient,
             textCapitalization: TextCapitalization.words,
-            decoration: const InputDecoration(
-              labelText: 'Received by',
-              hintText: 'Name of the person who took the parcel',
-              prefixIcon: Icon(
-                Icons.person_outline_rounded,
-                size: 20,
-                color: AppColors.muted,
-              ),
+            style: const TextStyle(
+              color: _Palette.ink,
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+            ),
+            decoration: _fieldDecoration(
+              label: 'Received by',
+              hint: 'Name of the person who took the parcel',
+              icon: Icons.person_outline_rounded,
             ),
           ),
           if (_parcel.cashToCollect != null) ...[
@@ -778,14 +1073,15 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
               keyboardType: const TextInputType.numberWithOptions(
                 decimal: true,
               ),
-              decoration: InputDecoration(
-                labelText: 'Cash collected',
-                hintText: _money(_parcel.cashToCollect!),
-                prefixIcon: const Icon(
-                  Icons.payments_outlined,
-                  size: 20,
-                  color: AppColors.muted,
-                ),
+              style: const TextStyle(
+                color: _Palette.ink,
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+              ),
+              decoration: _fieldDecoration(
+                label: 'Cash collected',
+                hint: _money(_parcel.cashToCollect!),
+                icon: Icons.payments_outlined,
               ),
             ),
           ],
@@ -813,13 +1109,13 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
             const SizedBox(height: 10),
             Text(
               _photoError!,
-              style: const TextStyle(color: AppColors.danger, fontSize: 12.5),
+              style: const TextStyle(color: _Palette.error, fontSize: 12.5),
             ),
           ],
           if (_photo != null) ...[
             const SizedBox(height: 14),
             ClipRRect(
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(14),
               child: Stack(
                 children: [
                   Image.file(
@@ -875,15 +1171,11 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SectionTitle('Progress'),
-        const SizedBox(height: 12),
+        const SizedBox(height: 10),
         Container(
           width: double.infinity,
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(_radius),
-            border: Border.all(color: AppColors.border),
-          ),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: _cardDecoration(),
           child: Column(
             children: [
               for (var index = 0; index < steps.length; index++)
@@ -902,18 +1194,18 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
 
   _StageStyle _stageStyle(RiderStage stage) => switch (stage) {
     RiderStage.readyForPickup => const _StageStyle(
-      AppColors.goldInk,
-      AppColors.goldSoft,
+      _Palette.warnInk,
+      _Palette.warnBg,
     ),
     RiderStage.forDelivery => const _StageStyle(
-      AppColors.blue,
-      AppColors.blueSoft,
+      _Palette.blue,
+      _Palette.blueSoft,
     ),
     RiderStage.deliveryFailed => const _StageStyle(
-      AppColors.danger,
-      AppColors.dangerSoft,
+      _Palette.error,
+      _Palette.errorContainer,
     ),
-    _ => const _StageStyle(AppColors.primaryDark, AppColors.mint),
+    _ => const _StageStyle(_Palette.mintInk, _Palette.mint),
   };
 }
 
@@ -927,6 +1219,48 @@ class _StageStyle {
   final Color fg, bg;
 }
 
+class _Ring extends StatelessWidget {
+  const _Ring({required this.size, required this.alpha});
+
+  final double size;
+  final int alpha;
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.white.withAlpha(alpha)),
+        ),
+      ),
+    );
+  }
+}
+
+class _Glow extends StatelessWidget {
+  const _Glow({required this.size, required this.color});
+
+  final double size;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: RadialGradient(colors: [color, color.withAlpha(0)]),
+        ),
+      ),
+    );
+  }
+}
+
 class _SectionTitle extends StatelessWidget {
   const _SectionTitle(this.text);
 
@@ -937,18 +1271,18 @@ class _SectionTitle extends StatelessWidget {
     return Row(
       children: [
         Container(
-          width: 3,
+          width: 5,
           height: 16,
           decoration: BoxDecoration(
-            color: AppColors.primary,
-            borderRadius: BorderRadius.circular(2),
+            color: _Palette.secondary,
+            borderRadius: BorderRadius.circular(3),
           ),
         ),
         const SizedBox(width: 8),
         Text(
           text,
           style: const TextStyle(
-            color: AppColors.ink,
+            color: _Palette.forestDeep,
             fontSize: 16,
             fontWeight: FontWeight.w700,
           ),
@@ -969,14 +1303,14 @@ class _HeaderChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: AppColors.glass,
+        color: Colors.white.withAlpha(26),
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppColors.glassBorder),
+        border: Border.all(color: Colors.white.withAlpha(38)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 13, color: Colors.white),
+          Icon(icon, size: 13, color: _Palette.mint),
           const SizedBox(width: 6),
           Text(
             label,
@@ -1015,20 +1349,20 @@ class _RouteStop extends StatelessWidget {
         Column(
           children: [
             Container(
-              width: 32,
-              height: 32,
+              width: 34,
+              height: 34,
               decoration: BoxDecoration(
                 color: color.withAlpha(26),
                 shape: BoxShape.circle,
               ),
-              child: Icon(icon, size: 17, color: color),
+              child: Icon(icon, size: 18, color: color),
             ),
             if (!last)
               Container(
                 width: 2,
                 height: 30,
                 decoration: BoxDecoration(
-                  color: AppColors.border,
+                  color: _Palette.border,
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
@@ -1044,10 +1378,10 @@ class _RouteStop extends StatelessWidget {
                 Text(
                   label.toUpperCase(),
                   style: const TextStyle(
-                    color: AppColors.muted,
+                    color: _Palette.outline,
                     fontSize: 10.5,
                     fontWeight: FontWeight.w700,
-                    letterSpacing: 0.6,
+                    letterSpacing: 0.8,
                   ),
                 ),
                 const SizedBox(height: 1),
@@ -1056,13 +1390,17 @@ class _RouteStop extends StatelessWidget {
                   style: const TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.w700,
-                    color: AppColors.ink,
+                    color: _Palette.ink,
                   ),
                 ),
                 const SizedBox(height: 2),
                 Text(
                   address,
-                  style: const TextStyle(fontSize: 12, color: AppColors.muted),
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: _Palette.inkVariant,
+                    height: 1.35,
+                  ),
                 ),
                 if (!last) const SizedBox(height: 16),
               ],
@@ -1093,10 +1431,18 @@ class _DetailRow extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 12),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Icon(icon, size: 18, color: AppColors.primaryDark),
-          const SizedBox(width: 10),
+          Container(
+            width: 34,
+            height: 34,
+            decoration: const BoxDecoration(
+              color: _Palette.surfaceLow,
+              shape: BoxShape.circle,
+            ),
+            child: Icon(icon, size: 18, color: _Palette.secondary),
+          ),
+          const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1104,15 +1450,16 @@ class _DetailRow extends StatelessWidget {
                 Text(
                   label,
                   style: const TextStyle(
-                    color: AppColors.muted,
+                    color: _Palette.outline,
                     fontSize: 11.5,
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
                 const SizedBox(height: 2),
                 Text(
                   value,
                   style: const TextStyle(
-                    color: AppColors.ink,
+                    color: _Palette.ink,
                     fontSize: 13.5,
                     fontWeight: FontWeight.w600,
                     height: 1.35,
@@ -1121,20 +1468,31 @@ class _DetailRow extends StatelessWidget {
               ],
             ),
           ),
-          if (actionLabel != null && onAction != null)
-            TextButton(
-              onPressed: onAction,
-              style: TextButton.styleFrom(
-                foregroundColor: AppColors.primaryDark,
-                minimumSize: const Size(0, 32),
-                padding: const EdgeInsets.symmetric(horizontal: 10),
-                textStyle: const TextStyle(
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w700,
+          if (actionLabel != null && onAction != null) ...[
+            const SizedBox(width: 8),
+            Material(
+              color: _Palette.surface,
+              borderRadius: BorderRadius.circular(18),
+              clipBehavior: Clip.antiAlias,
+              child: InkWell(
+                onTap: onAction,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 8,
+                  ),
+                  child: Text(
+                    actionLabel!,
+                    style: const TextStyle(
+                      color: _Palette.secondary,
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
                 ),
               ),
-              child: Text(actionLabel!),
             ),
+          ],
         ],
       ),
     );
@@ -1157,14 +1515,14 @@ class _PhotoButton extends StatelessWidget {
     return OutlinedButton.icon(
       onPressed: onTap,
       style: OutlinedButton.styleFrom(
-        foregroundColor: AppColors.ink,
-        side: const BorderSide(color: AppColors.border),
-        backgroundColor: AppColors.mintSoft,
-        minimumSize: const Size(0, 46),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        foregroundColor: _Palette.ink,
+        side: const BorderSide(color: _Palette.border),
+        backgroundColor: _Palette.surfaceLow,
+        minimumSize: const Size(0, 48),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
         textStyle: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700),
       ),
-      icon: Icon(icon, size: 18),
+      icon: Icon(icon, size: 18, color: _Palette.secondary),
       label: Text(label),
     );
   }
@@ -1183,7 +1541,7 @@ class _StepRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = done || active ? AppColors.primary : AppColors.border;
+    final color = done || active ? _Palette.secondary : _Palette.border;
 
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1194,7 +1552,7 @@ class _StepRow extends StatelessWidget {
               width: 22,
               height: 22,
               decoration: BoxDecoration(
-                color: done ? AppColors.primary : Colors.white,
+                color: done ? _Palette.secondary : Colors.white,
                 shape: BoxShape.circle,
                 border: Border.all(color: color, width: 2),
               ),
@@ -1210,7 +1568,7 @@ class _StepRow extends StatelessWidget {
                         width: 8,
                         height: 8,
                         decoration: const BoxDecoration(
-                          color: AppColors.primary,
+                          color: _Palette.secondary,
                           shape: BoxShape.circle,
                         ),
                       ),
@@ -1221,7 +1579,7 @@ class _StepRow extends StatelessWidget {
               Container(
                 width: 2,
                 height: 26,
-                color: done ? AppColors.primary : AppColors.border,
+                color: done ? _Palette.secondary : _Palette.border,
               ),
           ],
         ),
@@ -1232,9 +1590,9 @@ class _StepRow extends StatelessWidget {
             child: Text(
               label,
               style: TextStyle(
-                fontSize: 13,
+                fontSize: 13.5,
                 fontWeight: active || done ? FontWeight.w700 : FontWeight.w500,
-                color: active || done ? AppColors.ink : AppColors.muted,
+                color: active || done ? _Palette.ink : _Palette.outline,
               ),
             ),
           ),
@@ -1262,40 +1620,68 @@ class _IssueSheet extends StatelessWidget {
       top: false,
       child: Container(
         margin: const EdgeInsets.all(12),
-        padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
         decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(24),
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: _Palette.border,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
             const Text(
               'What happened?',
               style: TextStyle(
-                color: AppColors.ink,
-                fontSize: 17,
+                color: _Palette.forestDeep,
+                fontSize: 18,
                 fontWeight: FontWeight.w800,
               ),
             ),
             const SizedBox(height: 4),
             const Text(
               'The buyer, the seller and your Station Hub will see this reason.',
-              style: TextStyle(color: AppColors.muted, fontSize: 12.5),
+              style: TextStyle(color: _Palette.outline, fontSize: 12.5),
             ),
             const SizedBox(height: 8),
             for (final reason in _reasons)
               ListTile(
                 contentPadding: EdgeInsets.zero,
-                leading: const Icon(
-                  Icons.error_outline_rounded,
-                  color: AppColors.danger,
-                  size: 20,
+                leading: Container(
+                  width: 34,
+                  height: 34,
+                  decoration: const BoxDecoration(
+                    color: _Palette.errorContainer,
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.error_outline_rounded,
+                    color: _Palette.error,
+                    size: 18,
+                  ),
                 ),
                 title: Text(
                   reason,
-                  style: const TextStyle(fontSize: 14, color: AppColors.ink),
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: _Palette.ink,
+                  ),
+                ),
+                trailing: const Icon(
+                  Icons.chevron_right_rounded,
+                  color: _Palette.outline,
+                  size: 20,
                 ),
                 onTap: () => Navigator.pop(context, reason),
               ),
